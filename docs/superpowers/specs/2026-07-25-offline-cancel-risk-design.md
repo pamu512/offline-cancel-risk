@@ -447,6 +447,10 @@ These are external bindings, not unspecified product behavior:
 | Distribution | OSS Git + PyPI package + CSV-only examples demo |
 | License default | Apache-2.0 |
 | Tenant integration | Adapter protocols from MVP; core has no vendor lock-in |
+| Phase 2 models | Directory bundle; **joblib + ONNX**; shadow on same pipeline |
+| Phase 2 promote | `promotion_ready` flag → auto canary (5%/24h default) → full promote or rollback |
+
+See also: `docs/superpowers/specs/2026-07-25-phase2-control-plane-design.md`.
 
 ## 17. References
 
