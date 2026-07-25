@@ -48,3 +48,9 @@ ear:
     selective_theft: 1.2
 feedback:
   daily_review_quota: 50
+routing:
+  # Prioritized review routing from attention_score + flags (downstream may use queue).
+  p1_attention_min: 200
+  p2_attention_min: 50
+  # Prefer theft queue when selective_theft flag is on; else offline; else abuse; else mixed.
+  prefer_flag_order: ["selective_theft", "cancelled_offline", "cancel_abuse"]

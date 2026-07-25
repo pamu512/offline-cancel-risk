@@ -1,0 +1,47 @@
+# Min/max bounds for ops-tunable policy params (city/region overlays).
+# Paths use dotted keys into policy.default.yaml.
+bounds:
+  dbscan.min_pts: {min: 3, max: 30}
+  dbscan.confidence_threshold: {min: 0.5, max: 0.95}
+  dbscan.clustering_radius_m: {min: 20, max: 150}
+  dbscan.immediate_dp_radius: {min: 50, max: 300}
+  dbscan.standard_dp_radius: {min: 150, max: 800}
+  dbscan.extended_dp_radius: {min: 300, max: 1500}
+  dbscan.standard_discount: {min: 0.2, max: 1.0}
+  dbscan.extended_discount: {min: 0.05, max: 0.8}
+  dbscan.drop_off_min_pts: {min: 5, max: 80}
+  dbscan.round_trip_gap_seconds: {min: 600, max: 7200}
+  dwell.min_dwell_seconds: {min: 30, max: 600}
+  dwell.max_speed_mps: {min: 0.5, max: 5.0}
+  sequence.stop_match_radius_m: {min: 50, max: 400}
+  gps.min_window_h: {min: 1, max: 12}
+  gps.max_window_h: {min: 3, max: 48}
+  gps.min_points: {min: 5, max: 100}
+  gps.max_gap_minutes: {min: 10, max: 180}
+  replacement.max_place_delay_minutes: {min: 15, max: 720}
+  replacement.route_similarity_min: {min: 0.3, max: 1.0}
+  theft.high_value_amount: {min: 50, max: 10000}
+  abuse.multi_cancel_window_minutes: {min: 15, max: 720}
+  abuse.near_dest_radius_m: {min: 100, max: 1000}
+  blend.cancelled_offline.rule_weight: {min: 0.0, max: 1.0}
+  blend.cancelled_offline.ml_weight: {min: 0.0, max: 1.0}
+  blend.cancel_abuse.rule_weight: {min: 0.0, max: 1.0}
+  blend.cancel_abuse.ml_weight: {min: 0.0, max: 1.0}
+  blend.selective_theft.rule_weight: {min: 0.0, max: 1.0}
+  blend.selective_theft.ml_weight: {min: 0.0, max: 1.0}
+  thresholds.cancelled_offline: {min: 0.5, max: 0.95}
+  thresholds.cancel_abuse: {min: 0.5, max: 0.95}
+  thresholds.selective_theft: {min: 0.5, max: 0.95}
+  ear.recoverability.cancelled_offline: {min: 0.0, max: 1.0}
+  ear.recoverability.cancel_abuse: {min: 0.0, max: 1.0}
+  ear.recoverability.selective_theft: {min: 0.0, max: 1.0}
+  ear.attention_weights.cancelled_offline: {min: 0.0, max: 3.0}
+  ear.attention_weights.cancel_abuse: {min: 0.0, max: 3.0}
+  ear.attention_weights.selective_theft: {min: 0.0, max: 3.0}
+  feedback.daily_review_quota: {min: 0, max: 5000}
+  routing.p1_attention_min: {min: 0.0, max: 100000}
+  routing.p2_attention_min: {min: 0.0, max: 100000}
+
+# Non-numeric / list params ops may override without numeric bounds
+allow_lists:
+  - theft.food_categories

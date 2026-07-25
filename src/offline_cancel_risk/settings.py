@@ -9,6 +9,10 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OCR_")
     policy_path: str = str(ROOT / "config" / "policy.default.yaml")
+    policy_guardrails_path: str = str(
+        ROOT / "config" / "policy_guardrails.default.yaml"
+    )
+    policy_overlays_path: str = str(ROOT / "data" / "policy_overlays.db")
     promote_gates_path: str = str(ROOT / "config" / "promote_gates.default.yaml")
     sqlite_path: str = str(ROOT / "data" / "assessments.db")
     stream_path: str = str(ROOT / "data" / "risk_events.jsonl")

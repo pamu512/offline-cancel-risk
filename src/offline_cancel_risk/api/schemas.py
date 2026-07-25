@@ -21,6 +21,8 @@ class AssessRequest(BaseModel):
     user_id: int | None = None
     merchant_id: int | None = None
     device_id: str | None = None
+    city_code: str | None = None
+    region_code: str | None = None
 
 
 class ThreeHeadScores(BaseModel):
@@ -70,3 +72,6 @@ class AssessmentResult(BaseModel):
     assessed_at: str
     shadow_scores: dict[str, ThreeHeadScores] = Field(default_factory=dict)
     model_roles: dict[str, str] = Field(default_factory=dict)
+    city_code: str | None = None
+    region_code: str | None = None
+    routing: dict[str, str | float] = Field(default_factory=dict)

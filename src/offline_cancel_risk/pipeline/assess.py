@@ -31,6 +31,9 @@ from offline_cancel_risk.pipeline.window import resolve_gps_window
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.policy.overlays import PolicyOverlayStore
+from offline_cancel_risk.policy.routing import build_routing
+from offline_cancel_risk.policy.service import resolved_policy_for_market
 from offline_cancel_risk.scoring.blend import blend_scores
 from offline_cancel_risk.scoring.ear import compute_ear
 from offline_cancel_risk.scoring.policy import apply_thresholds, policy_hash
@@ -97,7 +100,15 @@ async def assess_order(
     registry: ModelRegistry | None = None,
     shadow_metrics: ShadowMetricsStore | None = None,
     canary: CanaryController | None = None,
+    overlays: PolicyOverlayStore | None = None,
 ) -> AssessmentResult:
+    if overlays is not None:
+        policy = resolved_policy_for_market(
+            policy,
+            overlays,
+            region_code=req.region_code,
+            city_code=req.city_code,
+        )
     phash = policy_hash(policy)
     # Resolve serving model id up front for idempotency key stability.
     champion_rec = registry.get_champion() if registry is not None else None
@@ -388,6 +399,13 @@ async def assess_order(
         assessed_at=assessed_at,
         shadow_scores=shadow_scores,
         model_roles=model_roles,
+        city_code=(req.city_code.strip().upper() if req.city_code else None),
+        region_code=(
+            req.region_code.strip().upper() if req.region_code else None
+        ),
+        routing=build_routing(
+            flags=flags, attention_score=float(attention), policy=policy
+        ),
     )
 
     # Dual-write: table first so idempotent cache survives stream failures.
