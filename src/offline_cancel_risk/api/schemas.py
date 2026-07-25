@@ -68,3 +68,5 @@ class AssessmentResult(BaseModel):
     graph_version: str
     feature_vector_ref: str
     assessed_at: str
+    shadow_scores: dict[str, ThreeHeadScores] = Field(default_factory=dict)
+    model_roles: dict[str, str] = Field(default_factory=dict)

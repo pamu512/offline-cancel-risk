@@ -28,6 +28,8 @@ from offline_cancel_risk.features.sequence import sequence_match_score
 from offline_cancel_risk.features.theft import theft_feature_score
 from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
 from offline_cancel_risk.pipeline.window import resolve_gps_window
+from offline_cancel_risk.models.metrics import ShadowMetricsStore
+from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.scoring.blend import blend_scores
 from offline_cancel_risk.scoring.ear import compute_ear
 from offline_cancel_risk.scoring.policy import apply_thresholds, policy_hash
@@ -37,6 +39,13 @@ from offline_cancel_risk.timeutil import parse_ts
 _MODEL_VERSION = "none"
 _DEFAULT_GENERATION = 1
 _LOG = logging.getLogger(__name__)
+_ML_FEATURE_KEYS = (
+    "final_stop_confidence",
+    "sequence_score",
+    "dwell_fraction",
+    "abuse_score",
+    "theft_score",
+)
 
 
 def _order_still_active(status: str) -> bool:
@@ -84,10 +93,17 @@ async def assess_order(
     table: TablePublisher,
     model_version: str = _MODEL_VERSION,
     generation: int = _DEFAULT_GENERATION,
+    registry: ModelRegistry | None = None,
+    shadow_metrics: ShadowMetricsStore | None = None,
 ) -> AssessmentResult:
     phash = policy_hash(policy)
+    # Resolve serving model id up front for idempotency key stability.
+    champion_rec = registry.get_champion() if registry is not None else None
+    serving_model_id = (
+        champion_rec.model_id if champion_rec is not None else model_version
+    )
     key = make_idempotency_key(
-        req.order_display_id, phash, model_version, generation
+        req.order_display_id, phash, serving_model_id, generation
     )
     cached = lookup_cached(table, key)
     if cached is not None:
@@ -216,13 +232,65 @@ async def assess_order(
     if float(gps_window["max_gap_minutes"]) > float(gps_policy["max_gap_minutes"]):
         reasons = [*reasons, "gps_gaps"]
 
-    ml_scores = {
+    ml_feature_vec = {
+        "final_stop_confidence": float(final_stop_confidence),
+        "sequence_score": float(sequence_score),
+        "dwell_fraction": float(dwell_fraction),
+        "abuse_score": float(abuse_score),
+        "theft_score": float(theft_score),
+    }
+    assert set(_ML_FEATURE_KEYS) <= set(ml_feature_vec)
+
+    ml_scores: dict[str, float | None] = {
         "cancelled_offline": None,
         "cancel_abuse": None,
         "selective_theft": None,
     }
+    shadow_scores: dict[str, ThreeHeadScores] = {}
+    model_roles: dict[str, str] = {}
+
+    if registry is not None and champion_rec is not None:
+        try:
+            ml_scores = {
+                k: float(v)
+                for k, v in registry.predict(
+                    champion_rec.model_id, ml_feature_vec
+                ).items()
+            }
+            model_roles[champion_rec.model_id] = "champion"
+        except Exception:
+            _LOG.exception(
+                "Champion model predict failed for %s; falling back to rules",
+                champion_rec.model_id,
+            )
+            reasons = [*reasons, "champion_predict_failed"]
+
     scores = blend_scores(rule_scores, ml_scores, policy)
     flags = apply_thresholds(scores, policy)
+
+    if registry is not None:
+        for shadow in registry.list_shadow():
+            try:
+                shadow_ml = registry.predict(shadow.model_id, ml_feature_vec)
+                shadow_blended = blend_scores(rule_scores, shadow_ml, policy)
+                shadow_scores[shadow.model_id] = ThreeHeadScores(**shadow_blended)
+                model_roles[shadow.model_id] = "shadow"
+                if shadow_metrics is not None:
+                    shadow_metrics.record(
+                        order_display_id=req.order_display_id,
+                        champion_model_id=serving_model_id,
+                        shadow_model_id=shadow.model_id,
+                        champion_scores=scores,
+                        shadow_scores=shadow_blended,
+                        order_value=float(req.order_value),
+                    )
+            except Exception:
+                _LOG.exception(
+                    "Shadow model predict failed for %s; skipping",
+                    shadow.model_id,
+                )
+                reasons = [*reasons, f"shadow_predict_failed:{shadow.model_id}"]
+
     ear, attention = compute_ear(scores, req.order_value, policy)
     ear_total = float(sum(ear.values()))
 
@@ -247,11 +315,13 @@ async def assess_order(
         assessment_generation=generation,
         provisional=sparse or gps_unavailable,
         policy_hash=phash,
-        model_version=model_version,
+        model_version=serving_model_id,
         twin_version="none",
         graph_version="lineage-v0",
         feature_vector_ref=f"mem:{req.order_display_id}:{generation}",
         assessed_at=assessed_at,
+        shadow_scores=shadow_scores,
+        model_roles=model_roles,
     )
 
     # Dual-write: table first so idempotent cache survives stream failures.

@@ -29,9 +29,10 @@ abuse:
   multi_cancel_window_minutes: 120
   near_dest_radius_m: 400
 blend:
-  cancelled_offline: {rule_weight: 1.0, ml_weight: 0.0}
-  cancel_abuse: {rule_weight: 1.0, ml_weight: 0.0}
-  selective_theft: {rule_weight: 1.0, ml_weight: 0.0}
+  # When ml_scores are null, blend falls back to rules only.
+  cancelled_offline: {rule_weight: 0.6, ml_weight: 0.4}
+  cancel_abuse: {rule_weight: 0.6, ml_weight: 0.4}
+  selective_theft: {rule_weight: 0.6, ml_weight: 0.4}
 thresholds:
   cancelled_offline: 0.75
   cancel_abuse: 0.75
