@@ -2,7 +2,7 @@
 
 ## Elevator pitch
 
-When a logistics order is cancelled, money can still walk out the door: the trip may have been completed off-platform, cancel/reassign games may be gaming the marketplace, or food/high-value goods may have gone missing. **offline-cancel-risk** turns cancelled-order + GPS evidence into three independent, ops-tunable risk scores—so downstream systems can stop revenue leakage without a human reviewing every cancel.
+Canceled orders don't always mean stopped activity. Off-platform completions, marketplace gaming, and inventory loss drain margins quietly. Offline Cancel Risk transforms raw order and GPS telemetry into three configurable risk scores. This gives downstream systems the intelligence to block post-cancel fraud at scale without overloading operations teams.
 
 It is an installable, Apache-2.0 toolkit (not a locked-in vendor product): plug in your GPS and order feeds, or try the zero-network CSV demo in minutes.
 
