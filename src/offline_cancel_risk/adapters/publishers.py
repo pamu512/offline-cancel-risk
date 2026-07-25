@@ -1,9 +1,10 @@
 from __future__ import annotations
 
+import json
 import sqlite3
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Protocol
+from typing import Any, Protocol
 
 from offline_cancel_risk.api.schemas import AssessmentResult
 from offline_cancel_risk.settings import get_settings
@@ -26,6 +27,11 @@ CREATE TABLE IF NOT EXISTS ledger (
   assessment_generation INTEGER,
   payload_json TEXT NOT NULL,
   written_at TEXT NOT NULL
+);
+CREATE TABLE IF NOT EXISTS feedback (
+  order_display_id TEXT PRIMARY KEY,
+  labels TEXT NOT NULL,
+  created_at TEXT NOT NULL
 );
 """
 
@@ -123,3 +129,45 @@ class SqliteTablePublisher:
         if row is None:
             return None
         return AssessmentResult.model_validate_json(row[0])
+
+    def latest(self, order_display_id: str) -> AssessmentResult | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT payload_json FROM assessments
+                WHERE order_display_id = ?
+                ORDER BY assessment_generation DESC
+                LIMIT 1
+                """,
+                (order_display_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return AssessmentResult.model_validate_json(row[0])
+
+    def list_generations(self, order_display_id: str) -> list[AssessmentResult]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM assessments
+                WHERE order_display_id = ?
+                ORDER BY assessment_generation ASC
+                """,
+                (order_display_id,),
+            ).fetchall()
+        return [AssessmentResult.model_validate_json(r[0]) for r in rows]
+
+    def upsert_feedback(self, order_display_id: str, labels: dict[str, Any]) -> None:
+        created_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO feedback (order_display_id, labels, created_at)
+                VALUES (?, ?, ?)
+                ON CONFLICT(order_display_id) DO UPDATE SET
+                  labels = excluded.labels,
+                  created_at = excluded.created_at
+                """,
+                (order_display_id, json.dumps(labels), created_at),
+            )
+            conn.commit()
