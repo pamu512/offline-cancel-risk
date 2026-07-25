@@ -8,3 +8,5 @@ data/
 dist/
 build/
 .superpowers/
+examples/csv_demo/out.json
+examples/csv_demo/backtest_metrics.json

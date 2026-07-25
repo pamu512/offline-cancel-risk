@@ -1,0 +1,3 @@
+order_display_id,driver_id,cancel_ts,assign_ts,latlong,path_point_num,order_status,category,order_value,currency,next_driver_no_order,replacement_order_id,replacement_placed_at,replacement_latlong,replacement_status,reassign_cancel_events,user_id,merchant_id,device_id,label_cancelled_offline,label_cancel_abuse,label_selective_theft
+ORD-FOOD-SYN-1,101,2024-01-01 11:20:00,2024-01-01 10:00:00,"14.55|121.02,14.65|121.08",2,CANCELLED,FOOD,800.0,PHP,true,,,,,,,,,0,0,1
+ORD-HAUL-SYN-1,202,2024-01-02 14:00:00,2024-01-02 10:00:00,"14.5|121.0,14.52|121.03,14.54|121.06",3,CANCELLED,HAUL,2500.0,PHP,false,,,,,,,,,1,0,0
