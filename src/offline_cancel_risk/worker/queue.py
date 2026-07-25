@@ -12,6 +12,7 @@ from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.pipeline.assess import assess_order
+from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
 
 @dataclass
@@ -52,6 +53,7 @@ class AssessJobQueue:
         registry: ModelRegistry | None = None,
         shadow_metrics: ShadowMetricsStore | None = None,
         canary: CanaryController | None = None,
+        overlays: PolicyOverlayStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -65,6 +67,7 @@ class AssessJobQueue:
                 registry=registry,
                 shadow_metrics=shadow_metrics,
                 canary=canary,
+                overlays=overlays,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -82,6 +85,7 @@ class AssessJobQueue:
         registry: ModelRegistry | None = None,
         shadow_metrics: ShadowMetricsStore | None = None,
         canary: CanaryController | None = None,
+        overlays: PolicyOverlayStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -95,6 +99,7 @@ class AssessJobQueue:
                     registry=registry,
                     shadow_metrics=shadow_metrics,
                     canary=canary,
+                    overlays=overlays,
                 )
             finally:
                 self._queue.task_done()

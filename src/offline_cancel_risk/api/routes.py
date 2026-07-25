@@ -6,6 +6,11 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.policy.resolve import GuardrailError
+from offline_cancel_risk.policy.service import (
+    resolved_policy_for_market,
+    save_overlay,
+)
 
 
 class AssessBatchRequest(BaseModel):
@@ -22,6 +27,14 @@ class JobResponse(BaseModel):
     status: str
     result: AssessmentResult | None = None
     error: str | None = None
+
+
+class PolicyOverlayIngestRequest(BaseModel):
+    """Product FE / control plane posts tunable params for a market."""
+
+    region_code: str
+    city_code: str = ""
+    overlay: dict[str, Any] = Field(default_factory=dict)
 
 
 router = APIRouter(prefix="/v1")
@@ -46,6 +59,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             registry=getattr(request.app.state, "registry", None),
             shadow_metrics=getattr(request.app.state, "shadow_metrics", None),
             canary=getattr(request.app.state, "canary", None),
+            overlays=getattr(request.app.state, "overlays", None),
         )
     else:
         queue.schedule(job_id)
@@ -222,3 +236,80 @@ async def force_promote(model_id: str, request: Request) -> dict[str, str]:
         request.app.state.registry.set_role(champ.model_id, "retired")
     request.app.state.registry.set_role(model_id, "champion")
     return {"model_id": model_id, "role": "champion"}
+
+
+@router.get("/policy/guardrails")
+async def get_policy_guardrails(request: Request) -> dict[str, Any]:
+    """Bounds Product FE uses to constrain tunable params before ingest."""
+    _require_auth(request)
+    return request.app.state.guardrails
+
+
+@router.get("/policy/overlays")
+async def list_policy_overlays(request: Request) -> list[dict[str, str]]:
+    _require_auth(request)
+    return request.app.state.overlays.list_keys()
+
+
+@router.get("/policy/overlays/{region_code}")
+async def get_region_overlay(
+    region_code: str, request: Request, city_code: str = ""
+) -> dict[str, Any]:
+    _require_auth(request)
+    overlay = request.app.state.overlays.get(region_code, city_code)
+    if overlay is None:
+        raise HTTPException(status_code=404, detail="overlay not found")
+    return {
+        "region_code": region_code.strip().upper(),
+        "city_code": city_code.strip().upper(),
+        "overlay": overlay,
+    }
+
+
+@router.get("/policy/resolved")
+async def get_resolved_policy(
+    request: Request,
+    region_code: str = "",
+    city_code: str = "",
+) -> dict[str, Any]:
+    """Default ← region ← city merge used at assess time for a market."""
+    _require_auth(request)
+    return resolved_policy_for_market(
+        request.app.state.policy,
+        request.app.state.overlays,
+        region_code=region_code or None,
+        city_code=city_code or None,
+    )
+
+
+@router.put("/policy/overlays")
+async def ingest_policy_overlay(
+    body: PolicyOverlayIngestRequest, request: Request
+) -> dict[str, Any]:
+    """Ingest ops-tuned params for a region/city within risk guardrails.
+
+    Product owns the FE; this endpoint is the control-plane write path.
+    Empty city_code = region-wide overlay. City overlay wins over region.
+    """
+    _require_auth(request)
+    try:
+        return save_overlay(
+            request.app.state.overlays,
+            request.app.state.guardrails,
+            region_code=body.region_code,
+            city_code=body.city_code,
+            overlay=body.overlay,
+        )
+    except GuardrailError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.delete("/policy/overlays/{region_code}")
+async def delete_policy_overlay(
+    region_code: str, request: Request, city_code: str = ""
+) -> dict[str, bool]:
+    _require_auth(request)
+    deleted = request.app.state.overlays.delete(region_code, city_code)
+    if not deleted:
+        raise HTTPException(status_code=404, detail="overlay not found")
+    return {"ok": True}

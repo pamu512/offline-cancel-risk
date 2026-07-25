@@ -10,7 +10,7 @@ It is an installable, Apache-2.0 toolkit (not a locked-in vendor product): plug 
 
 | Audience | Why you’d use it |
 |---|---|
-| **Ops / logistics managers** | Tune thresholds and weights; prioritize by expected revenue at risk, not raw flag counts |
+| **Ops / logistics managers** | Product FE tunes thresholds/weights per `region_code` / `city_code` within risk guardrails (this service ingests overlays); prioritize review by expected revenue at risk |
 | **Fraud / risk investigators** | Get explainable reason codes and evidence packs for the rare disputes that still need a human |
 | **Data / platform engineers** | Drop in as an async microservice or library job; consume scores from a stream + table |
 | **Any logistics / delivery team** | Clone or `pip install`, bring CSV or adapters—no proprietary stack required |
@@ -94,6 +94,33 @@ curl -X POST localhost:8000/v1/models/{id}/evaluate
 ```
 
 Serving flags use the champion (or canary cohort when active). Shadow scores are recorded on each assess without changing flags outside the canary.
+
+### Market policy overlays (ops ingest)
+
+Product owns the tuning UI. This service exposes ingest + guardrails so ops can set almost all model/policy numerics per **region** and **city**, clamped by `config/policy_guardrails.default.yaml`.
+
+Merge order at assess time: **default ← region (`city_code=""`) ← city**. Pass `region_code` / `city_code` on `/v1/assess`. Each result includes a `routing` object (`priority` / `queue`) for prioritized investigation queues.
+
+```bash
+# Guardrails Product FE should enforce client-side (server re-validates)
+curl localhost:8000/v1/policy/guardrails
+
+# Ingest city overlay (rejects values outside guardrails with 400)
+curl -X PUT localhost:8000/v1/policy/overlays \
+  -H 'content-type: application/json' \
+  -d '{
+    "region_code":"PH",
+    "city_code":"MNL",
+    "overlay":{
+      "thresholds":{"cancelled_offline":0.82},
+      "dbscan":{"confidence_threshold":0.8},
+      "routing":{"p1_attention_min":150}
+    }
+  }'
+
+# Resolved policy for a market
+curl 'localhost:8000/v1/policy/resolved?region_code=PH&city_code=MNL'
+```
 
 ## License
 

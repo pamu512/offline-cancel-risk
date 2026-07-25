@@ -12,6 +12,7 @@ from offline_cancel_risk.api.routes import router
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 from offline_cancel_risk.settings import Settings, get_settings, load_policy
 from offline_cancel_risk.worker.queue import AssessJobQueue
 
@@ -34,13 +35,16 @@ def create_app(
     registry: ModelRegistry | None = None,
     shadow_metrics: ShadowMetricsStore | None = None,
     canary: CanaryController | None = None,
+    overlays: PolicyOverlayStore | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     gps = gps_client if gps_client is not None else _default_gps_client(settings)
     stream_pub = stream or JsonlStreamPublisher(stream_path=settings.stream_path)
     table_pub = table or SqliteTablePublisher(sqlite_path=settings.sqlite_path)
     policy = load_policy(settings.policy_path)
+    guardrails = load_policy(settings.policy_guardrails_path)
     gates = load_policy(settings.promote_gates_path)
+    overlay_store = overlays or PolicyOverlayStore(settings.policy_overlays_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -65,6 +69,7 @@ def create_app(
                     registry=reg,
                     shadow_metrics=metrics,
                     canary=canary_ctrl,
+                    overlays=overlay_store,
                 )
             )
         try:
@@ -83,6 +88,8 @@ def create_app(
     app.state.stream = stream_pub
     app.state.table = table_pub
     app.state.policy = policy
+    app.state.guardrails = guardrails
+    app.state.overlays = overlay_store
     app.state.gates = gates
     app.state.queue = queue
     app.state.registry = reg
