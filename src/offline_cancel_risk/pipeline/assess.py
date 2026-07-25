@@ -1,0 +1,239 @@
+from __future__ import annotations
+
+from datetime import datetime, timezone
+from typing import Any
+
+from offline_cancel_risk.adapters.gps import GpsClient
+from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
+from offline_cancel_risk.api.schemas import (
+    AssessRequest,
+    AssessmentResult,
+    ExpectedRevenueAtRisk,
+    ThreeHeadFlags,
+    ThreeHeadMlScores,
+    ThreeHeadScores,
+)
+from offline_cancel_risk.domain.models import GpsPoint
+from offline_cancel_risk.features.abuse import abuse_feature_score
+from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
+from offline_cancel_risk.features.dwell import dwell_stop_mask
+from offline_cancel_risk.features.geo import haversine, parse_latlong
+from offline_cancel_risk.features.lineage import build_lineage_id
+from offline_cancel_risk.features.replacement import evaluate_replacement
+from offline_cancel_risk.features.sequence import sequence_match_score
+from offline_cancel_risk.features.theft import theft_feature_score
+from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
+from offline_cancel_risk.pipeline.window import resolve_gps_window
+from offline_cancel_risk.scoring.blend import blend_scores
+from offline_cancel_risk.scoring.ear import compute_ear
+from offline_cancel_risk.scoring.policy import apply_thresholds, policy_hash
+from offline_cancel_risk.scoring.rules import compute_rule_scores
+
+_MODEL_VERSION = "none"
+_DEFAULT_GENERATION = 1
+
+
+def _parse_ts(ts: str) -> datetime:
+    try:
+        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
+    except ValueError:
+        return datetime.fromisoformat(ts)
+
+
+def _order_still_active(status: str) -> bool:
+    return status.strip().upper() not in {
+        "CANCELLED",
+        "CANCELED",
+        "COMPLETED",
+        "DELIVERED",
+        "DONE",
+    }
+
+
+def _cancel_near_destination(
+    points: list[GpsPoint],
+    stops: list[tuple[float, float]],
+    near_dest_radius_m: float,
+) -> bool:
+    if not points or not stops:
+        return False
+    last = max(points, key=lambda p: _parse_ts(p.ts))
+    dest_lat, dest_lon = stops[-1]
+    return haversine(last.lat, last.lon, dest_lat, dest_lon) <= near_dest_radius_m
+
+
+def _replacement_delay_minutes(req: AssessRequest) -> float | None:
+    if not req.replacement_placed_at:
+        return None
+    delta = _parse_ts(req.replacement_placed_at) - _parse_ts(req.cancel_ts)
+    return delta.total_seconds() / 60.0
+
+
+def _gps_sparse(window_meta: dict[str, Any], gps_policy: dict[str, Any]) -> bool:
+    return (
+        int(window_meta["point_count"]) < int(gps_policy["min_points"])
+        or float(window_meta["max_gap_minutes"]) > float(gps_policy["max_gap_minutes"])
+    )
+
+
+async def assess_order(
+    req: AssessRequest,
+    gps_client: GpsClient,
+    policy: dict[str, Any],
+    *,
+    stream: StreamPublisher,
+    table: TablePublisher,
+    model_version: str = _MODEL_VERSION,
+    generation: int = _DEFAULT_GENERATION,
+) -> AssessmentResult:
+    phash = policy_hash(policy)
+    key = make_idempotency_key(
+        req.order_display_id, phash, model_version, generation
+    )
+    cached = lookup_cached(table, key)
+    if cached is not None:
+        return cached
+
+    gps_policy = policy["gps"]
+    assign_ts = _parse_ts(req.assign_ts)
+    cancel_ts = _parse_ts(req.cancel_ts)
+
+    async def fetch(start: datetime, end: datetime) -> list[GpsPoint]:
+        return await gps_client.fetch_track(req.driver_id, start, end)
+
+    window = await resolve_gps_window(
+        anchor_start=assign_ts,
+        anchor_end=cancel_ts,
+        fetch=fetch,
+        policy=gps_policy,
+    )
+    gps_window = {
+        "start": window.start.isoformat(),
+        "end": window.end.isoformat(),
+        "expanded": window.expanded,
+        "point_count": window.point_count,
+        "max_gap_minutes": window.max_gap_minutes,
+    }
+    sparse = _gps_sparse(gps_window, gps_policy)
+
+    stops = parse_latlong(req.latlong)
+    dbscan = compute_stop_confidences(window.points, stops, policy["dbscan"])
+    confidence_list: list[float] = list(dbscan["confidence_list"])
+    final_stop_confidence = float(dbscan["final_confidence"])
+
+    dwell_policy = {
+        **policy["dwell"],
+        "radius_m": float(policy["sequence"]["stop_match_radius_m"]),
+    }
+    dwell_masks = [
+        dwell_stop_mask(window.points, stop, dwell_policy) for stop in stops
+    ]
+    dwell_fraction = (
+        sum(1 for m in dwell_masks if m) / len(stops) if stops else 0.0
+    )
+    sequence_score = sequence_match_score(
+        window.points, stops, policy["sequence"]
+    )
+
+    conf_threshold = float(policy["dbscan"]["confidence_threshold"])
+    last_conf = confidence_list[-1] if confidence_list else 0.0
+    last_dwell = dwell_masks[-1] if dwell_masks else False
+    original_reached_destination = last_conf >= conf_threshold or last_dwell
+
+    has_replacement = bool(req.replacement_order_id)
+    replacement = evaluate_replacement(
+        original_reached_destination=original_reached_destination,
+        replacement_placed_delay_minutes=_replacement_delay_minutes(req),
+        route_similarity=None,
+        has_replacement=has_replacement,
+        policy=policy["replacement"],
+    )
+    lineage_id = build_lineage_id(req.order_display_id, req.reassign_cancel_events)
+
+    near_dest = _cancel_near_destination(
+        window.points,
+        stops,
+        float(policy["abuse"]["near_dest_radius_m"]),
+    )
+    driver_ids = {req.driver_id}
+    for event in req.reassign_cancel_events:
+        if "driver_id" in event:
+            driver_ids.add(int(event["driver_id"]))
+
+    abuse_score, abuse_reasons = abuse_feature_score(
+        {
+            "order_still_active": _order_still_active(req.order_status),
+            "cancel_event_count": len(req.reassign_cancel_events) + 1,
+            "driver_chain_count": len(driver_ids),
+            "cancel_near_destination": near_dest,
+        },
+        policy["abuse"],
+    )
+    theft_score, theft_reasons = theft_feature_score(
+        {
+            "category": req.category,
+            "order_value": req.order_value,
+            "next_driver_no_order": bool(req.next_driver_no_order),
+        },
+        policy["theft"],
+    )
+
+    features: dict[str, Any] = {
+        "final_stop_confidence": final_stop_confidence,
+        "sequence_score": sequence_score,
+        "dwell_fraction": dwell_fraction,
+        "has_replacement": has_replacement,
+        "replacement_valid": replacement.valid,
+        "abuse_score": abuse_score,
+        "theft_score": theft_score,
+        "abuse_reasons": abuse_reasons,
+        "theft_reasons": theft_reasons,
+        "replacement_reasons": list(replacement.reason_codes),
+    }
+    rule_scores, reasons = compute_rule_scores(features, policy)
+    if sparse:
+        reasons = [*reasons, "gps_sparse"]
+    if float(gps_window["max_gap_minutes"]) > float(gps_policy["max_gap_minutes"]):
+        reasons = [*reasons, "gps_gaps"]
+
+    ml_scores = {
+        "cancelled_offline": None,
+        "cancel_abuse": None,
+        "selective_theft": None,
+    }
+    scores = blend_scores(rule_scores, ml_scores, policy)
+    flags = apply_thresholds(scores, policy)
+    ear, attention = compute_ear(scores, req.order_value, policy)
+    ear_total = float(sum(ear.values()))
+
+    assessed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
+    result = AssessmentResult(
+        order_display_id=req.order_display_id,
+        driver_id=req.driver_id,
+        scores=ThreeHeadScores(**scores),
+        flags=ThreeHeadFlags(**flags),
+        expected_revenue_at_risk=ExpectedRevenueAtRisk(
+            cancelled_offline=float(ear.get("cancelled_offline", 0.0)),
+            cancel_abuse=float(ear.get("cancel_abuse", 0.0)),
+            selective_theft=float(ear.get("selective_theft", 0.0)),
+            total=ear_total,
+        ),
+        attention_score=float(attention),
+        reasons=reasons,
+        rule_scores=ThreeHeadScores(**rule_scores),
+        ml_scores=ThreeHeadMlScores(**ml_scores),
+        gps_window=gps_window,
+        lineage_id=lineage_id,
+        assessment_generation=generation,
+        provisional=sparse,
+        policy_hash=phash,
+        model_version=model_version,
+        twin_version="none",
+        graph_version="lineage-v0",
+        feature_vector_ref=f"mem:{req.order_display_id}:{generation}",
+        assessed_at=assessed_at,
+    )
+
+    stream.publish(result)
+    table.upsert(result)
+    return result
