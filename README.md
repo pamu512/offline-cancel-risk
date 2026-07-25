@@ -1,6 +1,29 @@
 # offline-cancel-risk
 
-Reusable async toolkit for scoring **cancelled-order offline**, **cancel abuse**, and **selective theft** risk in logistics. Policy-driven rules, GPS windows, DBSCAN clustering, and optional ML blending ship as an installable Python package (`offline_cancel_risk`).
+## Elevator pitch
+
+When a logistics order is cancelled, money can still walk out the door: the trip may have been completed off-platform, cancel/reassign games may be gaming the marketplace, or food/high-value goods may have gone missing. **offline-cancel-risk** turns cancelled-order + GPS evidence into three independent, ops-tunable risk scores—so downstream systems can stop revenue leakage without a human reviewing every cancel.
+
+It is an installable, Apache-2.0 toolkit (not a locked-in vendor product): plug in your GPS and order feeds, or try the zero-network CSV demo in minutes.
+
+## Who it’s for
+
+| Audience | Why you’d use it |
+|---|---|
+| **Ops / logistics managers** | Tune thresholds and weights; prioritize by expected revenue at risk, not raw flag counts |
+| **Fraud / risk investigators** | Get explainable reason codes and evidence packs for the rare disputes that still need a human |
+| **Data / platform engineers** | Drop in as an async microservice or library job; consume scores from a stream + table |
+| **Any logistics / delivery team** | Clone or `pip install`, bring CSV or adapters—no proprietary stack required |
+
+**Not for:** realtime cancel-path blocking, payout/suspension enforcement (downstream owns actions), or replacing your LBS GPS platform.
+
+## What it scores
+
+Independent soft scores + policy flags:
+
+1. **Cancelled offline** — trip likely completed off-platform (revenue leakage)
+2. **Cancel abuse** — cancel / reassign games (order stays active, chains, cancel near destination, …)
+3. **Selective theft** — food / high-value + next-driver “no order” signals
 
 ## Quickstart (no API keys)
 
