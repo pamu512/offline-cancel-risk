@@ -23,16 +23,41 @@ class AssessRequest(BaseModel):
     device_id: str | None = None
 
 
+class ThreeHeadScores(BaseModel):
+    cancelled_offline: float
+    cancel_abuse: float
+    selective_theft: float
+
+
+class ThreeHeadFlags(BaseModel):
+    cancelled_offline: int
+    cancel_abuse: int
+    selective_theft: int
+
+
+class ThreeHeadMlScores(BaseModel):
+    cancelled_offline: float | None
+    cancel_abuse: float | None
+    selective_theft: float | None
+
+
+class ExpectedRevenueAtRisk(BaseModel):
+    cancelled_offline: float
+    cancel_abuse: float
+    selective_theft: float
+    total: float
+
+
 class AssessmentResult(BaseModel):
     order_display_id: str
     driver_id: int
-    scores: dict[str, float]
-    flags: dict[str, int]
-    expected_revenue_at_risk: dict[str, float]
+    scores: ThreeHeadScores
+    flags: ThreeHeadFlags
+    expected_revenue_at_risk: ExpectedRevenueAtRisk
     attention_score: float
     reasons: list[str]
-    rule_scores: dict[str, float]
-    ml_scores: dict[str, float | None]
+    rule_scores: ThreeHeadScores
+    ml_scores: ThreeHeadMlScores
     gps_window: dict[str, str | int | float | bool]
     lineage_id: str
     assessment_generation: int
