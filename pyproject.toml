@@ -20,10 +20,12 @@ dependencies = [
   "scikit-learn>=1.5.0",
   "pandas>=2.2.0",
   "pyyaml>=6.0.0",
+  "joblib>=1.4.0",
+  "onnxruntime>=1.19.0",
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "build>=1.2.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "build>=1.2.0", "onnx>=1.16.0", "skl2onnx>=1.17.0"]
 
 [project.scripts]
 # Prefer `python -m examples.csv_demo` from a clone; optional thin wrappers can be added under offline_cancel_risk.cli later.
