@@ -2,23 +2,26 @@
 
 > **For agentic workers:** REQUIRED SUB-SKILL: Use superpowers:subagent-driven-development (recommended) or superpowers:executing-plans to implement this plan task-by-task. Steps use checkbox (`- [ ]`) syntax for tracking.
 
-**Goal:** Ship an async assess microservice that scores cancelled orders for `cancelled_offline`, `cancel_abuse`, and `selective_theft` using deterministic rules (v5 DBSCAN + dwell/sequence + lineage/replacement + abuse/theft features), writes stream+table outputs with ledger audit fields, and supports batch backfill — without ML, twin, or enforcement.
+**Goal:** Ship a **reusable open-source toolkit** (Git + installable `offline-cancel-risk` package + CSV-only demo) that scores cancelled orders for `cancelled_offline`, `cancel_abuse`, and `selective_theft` using deterministic rules, with pluggable adapters and optional API/worker — without ML, twin, or enforcement.
 
-**Architecture:** FastAPI accepts assess/batch/feedback/health; an in-process worker runs the pipeline (GPS adapter → features → rule scores → policy/EAR → publishers). GPS talks to an existing LBS API behind a swappable client (fake in tests). SQLite holds assessment table + ledger; an in-memory/file event log stands in for Kafka until Phase 3 binding.
+**Architecture:** Installable library under `src/offline_cancel_risk` owns schemas, features, scoring, and `assess_order()`. Adapter protocols cover GPS, events, and publishers; MVP includes `CsvGpsClient`, `FakeGpsClient`, `HttpGpsClient`, JSONL stream, SQLite table. Optional FastAPI/worker for service mode. `examples/csv_demo` runs fully offline on sample CSVs so anyone can clone and try without credentials.
 
-**Tech Stack:** Python 3.11+, FastAPI, Pydantic v2, httpx, numpy, scikit-learn, pandas, PyYAML, pytest, pytest-asyncio, uvicorn, sqlite3
+**Tech Stack:** Python 3.11+, FastAPI, Pydantic v2, httpx, numpy, scikit-learn, pandas, PyYAML, pytest, pytest-asyncio, uvicorn, sqlite3; Apache-2.0 license
 
 **Spec:** `docs/superpowers/specs/2026-07-25-offline-cancel-risk-design.md`
 
-**Out of this plan (follow-on plans):** Phase 2 ML/calibration/shadow/feedback sampler intelligence; Phase 3 spoof/market/simulator/feature-store/multi-tenant/Kafka binding; Phase 4 twin/entity-graph/multi-signal/causal/foundation/case-packs.
+**Out of this plan (follow-on plans):** Phase 2 ML/calibration/shadow/feedback sampler intelligence; Phase 3 spoof/market/simulator/feature-store/Kafka·WH bindings/PyPI publish automation; Phase 4 twin/entity-graph/multi-signal/causal/foundation/case-packs.
 
 ## Global Constraints
 
+- **Reuse-first:** no vendor/company-specific table names, host paths, or SDKs inside `src/offline_cancel_risk` core.
+- Distribution: Apache-2.0 LICENSE + NOTICE + CONTRIBUTING; package import path `offline_cancel_risk`.
+- CSV demo must succeed with **no network** after `pip install -e ".[dev]"`.
 - Async assessment only — never block a cancel path for realtime scoring.
 - No enforcement actions (no payout/suspend calls).
 - Three risk heads are independent (theft must not imply offline).
 - Soft scores are source of truth; flags come from versioned policy thresholds.
-- GPS via existing LBS adapter interface; adaptive window 3h→24h on sparse points or gaps.
+- GPS via adapter protocol; adaptive window 3h→24h on sparse points or gaps.
 - Every successful assess writes identical schema to stream + table; idempotent on `(order_display_id, policy_hash, model_version, assessment_generation)`.
 - MVP `model_version` is always `"none"`; `ml_scores` are null/omitted; blend = rule scores.
 - Seed v5 constants in config: `MIN_PTS=7`, radii 150/400/800, discounts 0.6/0.2, confidence 0.75, clustering radius 50m.
@@ -29,43 +32,51 @@
 
 ```text
 offline-cancel-risk/
-  pyproject.toml
-  README.md
+  LICENSE
+  NOTICE
+  CONTRIBUTING.md
+  pyproject.toml            # name=offline-cancel-risk; package-dir=src
+  README.md                 # pip + CSV demo + optional API
   config/policy.default.yaml
-  app/
+  src/offline_cancel_risk/
     __init__.py
-    main.py                 # FastAPI app factory
-    settings.py             # env + paths
+    main.py                 # FastAPI app factory (optional service mode)
+    settings.py
     api/
-      routes.py             # HTTP endpoints
-      schemas.py            # request/response Pydantic models
+      routes.py
+      schemas.py
     domain/
-      models.py             # internal dataclasses / Typed structures
-    gps/
-      client.py             # LBS protocol + HttpGpsClient + FakeGpsClient
-      window.py             # 3h→24h expand logic
+      models.py
+    adapters/
+      gps.py                # protocol + Fake/Csv/Http clients
+      events.py             # protocol + CsvOrdersClient
+      publishers.py         # protocol + JsonlStream + SqliteTable
     features/
-      geo.py                # haversine, parse_latlong
-      dbscan_v5.py          # stop confidence port
-      dwell.py              # dwell/speed stop proof
-      sequence.py           # visit order match
-      replacement.py        # OR validity paths
+      geo.py
+      dbscan_v5.py
+      dwell.py
+      sequence.py
+      replacement.py
       abuse.py
       theft.py
-      lineage.py            # cancel→reassign→replace chain summary
+      lineage.py
     scoring/
-      rules.py              # rule_scores + reasons
-      blend.py              # rule-only blend for MVP
-      policy.py             # flags + policy_hash
-      ear.py                # expected revenue at risk + attention
+      rules.py
+      blend.py
+      policy.py
+      ear.py
     pipeline/
-      assess.py             # orchestrates one assessment
+      assess.py
       idempotency.py
-    publishers/
-      stream.py             # file/memory event log
-      table.py              # sqlite assessments + ledger
+      window.py             # GPS 3h→24h expand
     worker/
-      queue.py              # in-process asyncio queue consumer
+      queue.py
+  examples/
+    csv_demo/
+      __main__.py
+      sample_orders.csv
+      sample_gps.csv
+      README.md
   tests/
     conftest.py
     test_geo.py
@@ -77,6 +88,7 @@ offline-cancel-risk/
     test_gps_window.py
     test_pipeline.py
     test_api.py
+    test_csv_demo.py
   scripts/
     backtest.py
 ```
@@ -86,24 +98,27 @@ offline-cancel-risk/
 ### Task 1: Project scaffold + policy config
 
 **Files:**
+- Create: `LICENSE` (Apache-2.0)
+- Create: `NOTICE`
+- Create: `CONTRIBUTING.md`
 - Create: `pyproject.toml`
 - Create: `README.md`
 - Create: `config/policy.default.yaml`
-- Create: `app/__init__.py`
-- Create: `app/settings.py`
+- Create: `src/offline_cancel_risk/__init__.py`
+- Create: `src/offline_cancel_risk/settings.py`
 - Create: `tests/conftest.py`
 - Test: `tests/test_settings_policy.py`
 
 **Interfaces:**
 - Consumes: none
-- Produces: `app.settings.get_settings() -> Settings`; `load_policy(path) -> dict`; package installable via `pip install -e ".[dev]"`
+- Produces: `offline_cancel_risk.settings.get_settings() -> Settings`; `load_policy(path) -> dict`; package installable via `pip install -e ".[dev]"`; import name `offline_cancel_risk`
 
 - [ ] **Step 1: Write failing test for policy load**
 
 ```python
 # tests/test_settings_policy.py
 from pathlib import Path
-from app.settings import load_policy, get_settings
+from offline_cancel_risk.settings import load_policy, get_settings
 
 def test_load_policy_has_v5_seeds():
     policy = load_policy(Path("config/policy.default.yaml"))
@@ -128,10 +143,18 @@ Expected: FAIL (package/module not found)
 `pyproject.toml`:
 
 ```toml
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
 [project]
 name = "offline-cancel-risk"
 version = "0.1.0"
+description = "Reusable async toolkit for cancelled-order offline, abuse, and theft risk scoring in logistics"
+readme = "README.md"
+license = { text = "Apache-2.0" }
 requires-python = ">=3.11"
+authors = [{ name = "Offline Cancel Risk Contributors" }]
 dependencies = [
   "fastapi>=0.115.0",
   "uvicorn[standard]>=0.32.0",
@@ -145,11 +168,17 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0"]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "build>=1.2.0"]
+
+[project.scripts]
+# Prefer `python -m examples.csv_demo` from a clone; optional thin wrappers can be added under offline_cancel_risk.cli later.
+
+[tool.setuptools.packages.find]
+where = ["src"]
 
 [tool.pytest.ini_options]
 asyncio_mode = "auto"
-pythonpath = ["."]
+pythonpath = ["src", "."]
 ```
 
 `config/policy.default.yaml`:
@@ -206,7 +235,7 @@ feedback:
   daily_review_quota: 50
 ```
 
-`app/settings.py`:
+`src/offline_cancel_risk/settings.py`:
 
 ```python
 from functools import lru_cache
@@ -214,15 +243,17 @@ from pathlib import Path
 import yaml
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
-ROOT = Path(__file__).resolve().parents[1]
+# settings.py lives at src/offline_cancel_risk/settings.py → repo root is parents[2]
+ROOT = Path(__file__).resolve().parents[2]
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OCR_")
     policy_path: str = str(ROOT / "config" / "policy.default.yaml")
     sqlite_path: str = str(ROOT / "data" / "assessments.db")
     stream_path: str = str(ROOT / "data" / "risk_events.jsonl")
-    gps_base_url: str = "http://localhost:9"  # overridden in real deploy
+    gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
     gps_api_key: str = ""
+    sync_assess: bool = False
 
 @lru_cache
 def get_settings() -> Settings:
@@ -236,7 +267,7 @@ def load_policy(path: Path | str) -> dict:
     return data
 ```
 
-Also create empty `app/__init__.py`, short `README.md` stating purpose + `pip install -e ".[dev]"` + `pytest`.
+Also create empty package `src/offline_cancel_risk/__init__.py`, Apache-2.0 `LICENSE` + short `NOTICE`, `CONTRIBUTING.md` (dev setup + PR expectations), and `README.md` with: what it is, `pip install -e ".[dev]"`, `pytest`, `python -m examples.csv_demo`, optional API.
 
 - [ ] **Step 4: Install and pass tests**
 
@@ -252,8 +283,8 @@ Expected: PASS
 - [ ] **Step 5: Commit**
 
 ```bash
-git add pyproject.toml README.md config/policy.default.yaml app/__init__.py app/settings.py tests/conftest.py tests/test_settings_policy.py
-git commit -m "chore: scaffold project and default policy config"
+git add LICENSE NOTICE CONTRIBUTING.md pyproject.toml README.md config/policy.default.yaml src/offline_cancel_risk/__init__.py src/offline_cancel_risk/settings.py tests/conftest.py tests/test_settings_policy.py
+git commit -m "chore: scaffold installable OSS package and default policy"
 ```
 
 ---
@@ -261,8 +292,8 @@ git commit -m "chore: scaffold project and default policy config"
 ### Task 2: API/domain schemas
 
 **Files:**
-- Create: `app/api/schemas.py`
-- Create: `app/domain/models.py`
+- Create: `src/offline_cancel_risk/api/schemas.py`
+- Create: `src/offline_cancel_risk/domain/models.py`
 - Test: `tests/test_schemas.py`
 
 **Interfaces:**
@@ -273,7 +304,7 @@ git commit -m "chore: scaffold project and default policy config"
 
 ```python
 # tests/test_schemas.py
-from app.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 
 def test_assess_request_minimal():
     req = AssessRequest(
@@ -328,7 +359,7 @@ Expected: FAIL import error
 - [ ] **Step 3: Implement schemas**
 
 Implement `AssessRequest` with optional fields: `replacement_order_id`, `replacement_placed_at`, `replacement_latlong`, `replacement_status`, `reassign_cancel_events: list[dict]`, `next_driver_no_order: bool | None`, `user_id`, `merchant_id`, `device_id`.  
-Implement `AssessmentResult` exactly as in the test. Put shared GPS point model in `app/domain/models.py`:
+Implement `AssessmentResult` exactly as in the test. Put shared GPS point model in `src/offline_cancel_risk/domain/models.py`:
 
 ```python
 from dataclasses import dataclass
@@ -345,7 +376,7 @@ class GpsPoint:
 
 ```bash
 pytest tests/test_schemas.py -v
-git add app/api/schemas.py app/domain/models.py tests/test_schemas.py
+git add src/offline_cancel_risk/api/schemas.py src/offline_cancel_risk/domain/models.py tests/test_schemas.py
 git commit -m "feat: add assess request and result schemas"
 ```
 
@@ -354,7 +385,7 @@ git commit -m "feat: add assess request and result schemas"
 ### Task 3: Geo helpers
 
 **Files:**
-- Create: `app/features/geo.py`
+- Create: `src/offline_cancel_risk/features/geo.py`
 - Test: `tests/test_geo.py`
 
 **Interfaces:**
@@ -364,7 +395,7 @@ git commit -m "feat: add assess request and result schemas"
 
 ```python
 # tests/test_geo.py
-from app.features.geo import haversine, parse_latlong
+from offline_cancel_risk.features.geo import haversine, parse_latlong
 
 def test_haversine_zero():
     assert haversine(1.0, 2.0, 1.0, 2.0) == 0.0
@@ -383,7 +414,7 @@ def test_parse_latlong():
 - [ ] **Step 3: Implement (port from notebook)**
 
 ```python
-# app/features/geo.py
+# src/offline_cancel_risk/features/geo.py
 import numpy as np
 
 def haversine(lat1: float, lon1: float, lat2: float, lon2: float) -> float:
@@ -410,7 +441,7 @@ def parse_latlong(latlong_str: str) -> list[tuple[float, float]]:
 
 ```bash
 pytest tests/test_geo.py -v
-git add app/features/geo.py tests/test_geo.py
+git add src/offline_cancel_risk/features/geo.py tests/test_geo.py
 git commit -m "feat: add haversine and latlong parsing"
 ```
 
@@ -419,7 +450,7 @@ git commit -m "feat: add haversine and latlong parsing"
 ### Task 4: DBSCAN v5 stop confidence
 
 **Files:**
-- Create: `app/features/dbscan_v5.py`
+- Create: `src/offline_cancel_risk/features/dbscan_v5.py`
 - Test: `tests/test_dbscan_v5.py`
 
 **Interfaces:**
@@ -429,8 +460,8 @@ git commit -m "feat: add haversine and latlong parsing"
 - [ ] **Step 1: Failing test — empty GPS**
 
 ```python
-from app.features.dbscan_v5 import compute_stop_confidences
-from app.settings import load_policy
+from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
+from offline_cancel_risk.settings import load_policy
 from pathlib import Path
 
 POLICY = load_policy(Path("config/policy.default.yaml"))["dbscan"]
@@ -461,7 +492,7 @@ Handle empty points without crashing (return empty list / zeros).
 
 ```bash
 pytest tests/test_dbscan_v5.py -v
-git add app/features/dbscan_v5.py tests/test_dbscan_v5.py
+git add src/offline_cancel_risk/features/dbscan_v5.py tests/test_dbscan_v5.py
 git commit -m "feat: port v5 DBSCAN stop confidence scoring"
 ```
 
@@ -470,8 +501,8 @@ git commit -m "feat: port v5 DBSCAN stop confidence scoring"
 ### Task 5: Dwell/speed + sequence features
 
 **Files:**
-- Create: `app/features/dwell.py`
-- Create: `app/features/sequence.py`
+- Create: `src/offline_cancel_risk/features/dwell.py`
+- Create: `src/offline_cancel_risk/features/sequence.py`
 - Test: `tests/test_dwell_sequence.py`
 
 **Interfaces:**
@@ -480,9 +511,9 @@ git commit -m "feat: port v5 DBSCAN stop confidence scoring"
 - [ ] **Step 1: Failing tests**
 
 ```python
-from app.domain.models import GpsPoint
-from app.features.dwell import dwell_stop_mask
-from app.features.sequence import sequence_match_score
+from offline_cancel_risk.domain.models import GpsPoint
+from offline_cancel_risk.features.dwell import dwell_stop_mask
+from offline_cancel_risk.features.sequence import sequence_match_score
 
 def test_dwell_requires_low_speed_duration():
     stop = (1.0, 2.0)
@@ -520,7 +551,7 @@ Fill the sequence test with two stops and timestamps proving ordered visits.
 
 ```bash
 pytest tests/test_dwell_sequence.py -v
-git add app/features/dwell.py app/features/sequence.py tests/test_dwell_sequence.py
+git add src/offline_cancel_risk/features/dwell.py src/offline_cancel_risk/features/sequence.py tests/test_dwell_sequence.py
 git commit -m "feat: add dwell/speed and sequence match features"
 ```
 
@@ -529,8 +560,8 @@ git commit -m "feat: add dwell/speed and sequence match features"
 ### Task 6: Replacement + lineage
 
 **Files:**
-- Create: `app/features/replacement.py`
-- Create: `app/features/lineage.py`
+- Create: `src/offline_cancel_risk/features/replacement.py`
+- Create: `src/offline_cancel_risk/features/lineage.py`
 - Test: `tests/test_replacement.py`
 
 **Interfaces:**
@@ -539,7 +570,7 @@ git commit -m "feat: add dwell/speed and sequence match features"
 - [ ] **Step 1: Failing tests for OR validity**
 
 ```python
-from app.features.replacement import evaluate_replacement
+from offline_cancel_risk.features.replacement import evaluate_replacement
 
 def test_valid_via_gps_path_only():
     v = evaluate_replacement(
@@ -592,7 +623,7 @@ def test_no_replacement_reason():
 
 ```bash
 pytest tests/test_replacement.py -v
-git add app/features/replacement.py app/features/lineage.py tests/test_replacement.py
+git add src/offline_cancel_risk/features/replacement.py src/offline_cancel_risk/features/lineage.py tests/test_replacement.py
 git commit -m "feat: add replacement OR validity and lineage helpers"
 ```
 
@@ -601,8 +632,8 @@ git commit -m "feat: add replacement OR validity and lineage helpers"
 ### Task 7: Abuse + theft rule features
 
 **Files:**
-- Create: `app/features/abuse.py`
-- Create: `app/features/theft.py`
+- Create: `src/offline_cancel_risk/features/abuse.py`
+- Create: `src/offline_cancel_risk/features/theft.py`
 - Test: `tests/test_abuse_theft.py`
 
 **Interfaces:**
@@ -658,7 +689,7 @@ Scoring guidance (keep deterministic & simple):
 
 ```bash
 pytest tests/test_abuse_theft.py -v
-git add app/features/abuse.py app/features/theft.py tests/test_abuse_theft.py
+git add src/offline_cancel_risk/features/abuse.py src/offline_cancel_risk/features/theft.py tests/test_abuse_theft.py
 git commit -m "feat: add cancel-abuse and selective-theft rule features"
 ```
 
@@ -667,10 +698,10 @@ git commit -m "feat: add cancel-abuse and selective-theft rule features"
 ### Task 8: Rules + blend + policy + EAR
 
 **Files:**
-- Create: `app/scoring/rules.py`
-- Create: `app/scoring/blend.py`
-- Create: `app/scoring/policy.py`
-- Create: `app/scoring/ear.py`
+- Create: `src/offline_cancel_risk/scoring/rules.py`
+- Create: `src/offline_cancel_risk/scoring/blend.py`
+- Create: `src/offline_cancel_risk/scoring/policy.py`
+- Create: `src/offline_cancel_risk/scoring/ear.py`
 - Test: `tests/test_rules_policy_ear.py`
 
 **Interfaces:**
@@ -744,7 +775,7 @@ selective_theft = theft_score
 
 ```bash
 pytest tests/test_rules_policy_ear.py -v
-git add app/scoring/*.py tests/test_rules_policy_ear.py
+git add src/offline_cancel_risk/scoring/*.py tests/test_rules_policy_ear.py
 git commit -m "feat: add rule scoring, policy flags, and EAR attention"
 ```
 
@@ -753,20 +784,20 @@ git commit -m "feat: add rule scoring, policy flags, and EAR attention"
 ### Task 9: GPS client + adaptive window
 
 **Files:**
-- Create: `app/gps/client.py`
-- Create: `app/gps/window.py`
+- Create: `src/offline_cancel_risk/adapters/gps.py`
+- Create: `src/offline_cancel_risk/pipeline/window.py`
 - Test: `tests/test_gps_window.py`
 
 **Interfaces:**
-- Produces: `GpsClient` protocol with `async def fetch_track(driver_id: int, start: datetime, end: datetime) -> list[GpsPoint]`; `FakeGpsClient`; `HttpGpsClient`; `resolve_gps_window(anchor_start, anchor_end, points_loader, policy) -> WindowResult`
+- Produces: `GpsClient` protocol with `async def fetch_track(driver_id: int, start: datetime, end: datetime) -> list[GpsPoint]`; `FakeGpsClient`; `CsvGpsClient` (local file, no network); `HttpGpsClient`; `resolve_gps_window(...)`
 
 - [ ] **Step 1: Failing tests**
 
 ```python
 import pytest
 from datetime import datetime, timezone, timedelta
-from app.gps.window import resolve_gps_window
-from app.domain.models import GpsPoint
+from offline_cancel_risk.pipeline.window import resolve_gps_window
+from offline_cancel_risk.domain.models import GpsPoint
 
 @pytest.mark.asyncio
 async def test_expands_when_too_few_points():
@@ -799,14 +830,15 @@ For gap test: return plenty of points but with a 3-hour hole in the 3h window; d
 2. If `len(points) < min_points` OR `max_gap_minutes` exceeded → expand end/start symmetrically toward 24h total span; re-fetch.  
 3. Stop at max window even if still sparse; set reasons later in pipeline.
 
-`HttpGpsClient.fetch_track`: `GET {base}/v1/drivers/{id}/gps?start=&end=` with API key header; map JSON list to `GpsPoint`. Exact path may change — keep mapping in one function.
+`HttpGpsClient.fetch_track`: `GET {base}/v1/drivers/{id}/gps?start=&end=` with API key header; map JSON list to `GpsPoint`. Exact path may change — keep mapping in one function.  
+`CsvGpsClient`: reads `driver_id,lat,lon,ts[,speed_mps]` CSV; filters by time range in-process (used by examples).
 
 - [ ] **Step 3: Pass + commit**
 
 ```bash
 pytest tests/test_gps_window.py -v
-git add app/gps/client.py app/gps/window.py tests/test_gps_window.py
-git commit -m "feat: add GPS client interface and adaptive windowing"
+git add src/offline_cancel_risk/adapters/gps.py src/offline_cancel_risk/pipeline/window.py tests/test_gps_window.py
+git commit -m "feat: add pluggable GPS adapters and adaptive windowing"
 ```
 
 ---
@@ -814,8 +846,8 @@ git commit -m "feat: add GPS client interface and adaptive windowing"
 ### Task 10: Assess pipeline + idempotency
 
 **Files:**
-- Create: `app/pipeline/assess.py`
-- Create: `app/pipeline/idempotency.py`
+- Create: `src/offline_cancel_risk/pipeline/assess.py`
+- Create: `src/offline_cancel_risk/pipeline/idempotency.py`
 - Test: `tests/test_pipeline.py`
 
 **Interfaces:**
@@ -846,7 +878,7 @@ Order of operations:
 
 ```bash
 pytest tests/test_pipeline.py -v
-git add app/pipeline/assess.py app/pipeline/idempotency.py tests/test_pipeline.py
+git add src/offline_cancel_risk/pipeline/assess.py src/offline_cancel_risk/pipeline/idempotency.py tests/test_pipeline.py
 git commit -m "feat: wire end-to-end assess pipeline with idempotency"
 ```
 
@@ -855,8 +887,7 @@ git commit -m "feat: wire end-to-end assess pipeline with idempotency"
 ### Task 11: Publishers (stream + sqlite table/ledger)
 
 **Files:**
-- Create: `app/publishers/stream.py`
-- Create: `app/publishers/table.py`
+- Create: `src/offline_cancel_risk/adapters/publishers.py`
 - Test: `tests/test_publishers.py`
 
 **Interfaces:**
@@ -894,7 +925,7 @@ CREATE TABLE IF NOT EXISTS ledger (
 
 ```bash
 pytest tests/test_publishers.py -v
-git add app/publishers/stream.py app/publishers/table.py tests/test_publishers.py
+git add src/offline_cancel_risk/adapters/publishers.py tests/test_publishers.py
 git commit -m "feat: add stream and sqlite assessment/ledger publishers"
 ```
 
@@ -903,9 +934,9 @@ git commit -m "feat: add stream and sqlite assessment/ledger publishers"
 ### Task 12: Worker queue + FastAPI routes
 
 **Files:**
-- Create: `app/worker/queue.py`
-- Create: `app/api/routes.py`
-- Create: `app/main.py`
+- Create: `src/offline_cancel_risk/worker/queue.py`
+- Create: `src/offline_cancel_risk/api/routes.py`
+- Create: `src/offline_cancel_risk/main.py`
 - Test: `tests/test_api.py`
 
 **Interfaces:**
@@ -915,7 +946,7 @@ git commit -m "feat: add stream and sqlite assessment/ledger publishers"
 
 ```python
 from httpx import ASGITransport, AsyncClient
-from app.main import create_app
+from offline_cancel_risk.main import create_app
 
 @pytest.mark.asyncio
 async def test_health():
@@ -943,39 +974,74 @@ Flow: `POST /v1/assess` returns `job_id`; worker processes (run worker tick in t
 
 ```bash
 pytest tests/test_api.py tests/ -v
-git add app/worker/queue.py app/api/routes.py app/main.py tests/test_api.py
+git add src/offline_cancel_risk/worker/queue.py src/offline_cancel_risk/api/routes.py src/offline_cancel_risk/main.py tests/test_api.py
 git commit -m "feat: add FastAPI assess endpoints and async worker"
 ```
 
 ---
 
-### Task 13: Backtest script + README usage
+### Task 13: CSV demo + backtest (reuse entrypoints)
 
 **Files:**
+- Create: `examples/csv_demo/__main__.py`
+- Create: `examples/csv_demo/sample_orders.csv`
+- Create: `examples/csv_demo/sample_gps.csv`
+- Create: `examples/csv_demo/README.md`
+- Create: `examples/csv_demo/__init__.py`
+- Create: `src/offline_cancel_risk/adapters/events.py` (`CsvOrdersClient`)
 - Create: `scripts/backtest.py`
 - Modify: `README.md`
+- Test: `tests/test_csv_demo.py`
 - Test: `tests/test_backtest_smoke.py`
 
 **Interfaces:**
-- Produces: CLI `python scripts/backtest.py --orders path.csv --gps path.csv --out path.json` computing flag rates and optional metrics if `label` column present
+- Produces: `python -m examples.csv_demo` (no network) → JSON results; `scripts/backtest.py` for labeled metrics
 
-- [ ] **Step 1: Smoke test with tiny CSV fixtures under `tests/fixtures/`**
+- [ ] **Step 1: Failing test — csv demo module runs offline**
 
-- [ ] **Step 2: Implement script** that loads orders+gps, runs `assess_order` with FakeGpsClient per driver/order, writes summary JSON: counts, mean scores, confusion vs `is_offline_reviewed` if present
+```python
+# tests/test_csv_demo.py
+import json
+from pathlib import Path
+from examples.csv_demo.__main__ import run_demo
 
-- [ ] **Step 3: Document runbook in README (install, pytest, uvicorn, backtest)
+def test_csv_demo_produces_three_heads(tmp_path, monkeypatch):
+    out = tmp_path / "out.json"
+    summary = run_demo(
+        orders_path=Path("examples/csv_demo/sample_orders.csv"),
+        gps_path=Path("examples/csv_demo/sample_gps.csv"),
+        out_path=out,
+    )
+    assert summary["order_count"] >= 1
+    payload = json.loads(out.read_text())
+    row = payload[0]
+    assert set(row["scores"]) == {"cancelled_offline", "cancel_abuse", "selective_theft"}
+```
+
+Sample CSVs must be synthetic (no real PII): include at least one FOOD + `next_driver_no_order` row and one haul multistop with clustered GPS near a stop.
+
+- [ ] **Step 2: Implement `run_demo` using `CsvGpsClient` + `CsvOrdersClient` + in-memory/temp publishers; implement backtest CLI similarly**
+
+- [ ] **Step 3: README quickstart (top of file)**
+
+```markdown
+## Quickstart (no API keys)
+pip install -e ".[dev]"
+pytest -q
+python -m examples.csv_demo
+```
 
 - [ ] **Step 4: Pass + commit**
 
 ```bash
-pytest tests/test_backtest_smoke.py -v
-git add scripts/backtest.py tests/fixtures tests/test_backtest_smoke.py README.md
-git commit -m "feat: add backtest CLI and usage docs"
+pytest tests/test_csv_demo.py tests/test_backtest_smoke.py -v
+git add examples scripts/backtest.py src/offline_cancel_risk/adapters/events.py tests/test_csv_demo.py tests/test_backtest_smoke.py README.md
+git commit -m "feat: add offline CSV demo and backtest entrypoints"
 ```
 
 ---
 
-### Task 14: MVP acceptance gate
+### Task 14: MVP acceptance gate (reusable package)
 
 **Files:** none new required
 
@@ -986,28 +1052,30 @@ pytest -v
 ```
 Expected: all PASS
 
-- [ ] **Step 2: Manual smoke**
+- [ ] **Step 2: Fresh-clone style smoke (no network beyond PyPI already installed)**
 
 ```bash
-uvicorn app.main:app --reload
-# POST /v1/health → ok
-# POST /v1/assess with sample body → job/result
+python -m examples.csv_demo
+# optional service mode
+OCR_SYNC_ASSESS=1 uvicorn offline_cancel_risk.main:app --reload
 ```
 
 - [ ] **Step 3: Verify constraints checklist**
 
+- [ ] `pip install -e .` exposes import `offline_cancel_risk`  
+- [ ] CSV demo runs with no GPS URL / API key  
 - [ ] Three independent heads in output  
 - [ ] `model_version` is `none`  
-- [ ] Stream JSONL + sqlite row written  
+- [ ] Stream JSONL + sqlite row written in service/pipeline tests  
 - [ ] Ledger row written  
-- [ ] Idempotent re-POST same payload does not bump generation  
-- [ ] GPS expand behavior covered by tests  
-- [ ] No enforcement client code exists (`rg -i "suspend|payout|ban" app/` → no matches)
+- [ ] Core has no tenant SDK imports (`rg -n "lalamove|idp|llm_" src/` → no matches)  
+- [ ] No enforcement client code (`rg -i "suspend|payout|ban" src/` → no matches)  
+- [ ] LICENSE is Apache-2.0  
 
 - [ ] **Step 4: Commit any fixes; tag MVP**
 
 ```bash
-git commit --allow-empty -m "chore: phase 0-1 MVP acceptance gate passed"
+git commit --allow-empty -m "chore: phase 0-1 reusable MVP acceptance gate passed"
 git tag v0.1.0-mvp
 ```
 
@@ -1016,13 +1084,15 @@ git tag v0.1.0-mvp
 ## Follow-on plans (do not implement in this plan)
 
 1. `2026-*-offline-cancel-risk-phase2-ml.md` — models, calibration, shadow, smart sampler  
-2. `2026-*-offline-cancel-risk-phase3-platform.md` — Kafka/WH binding, simulator, spoof, multi-tenant, feature store  
+2. `2026-*-offline-cancel-risk-phase3-platform.md` — Kafka/WH binding, simulator, spoof, PyPI publish CI, extra adapters  
 3. `2026-*-offline-cancel-risk-phase4-excellence.md` — twin, entity graph, multi-signal, causal replacement, foundation model, case packs  
 
 ## Spec coverage map (Phase 0–1)
 
 | Spec area | Task |
 |---|---|
+| OSS package + LICENSE + CSV demo | 1, 13, 14 |
+| Adapter protocols (GPS/events/publishers) | 9, 11, 13 |
 | Async assess API + batch | 12 |
 | GPS adaptive 3→24h | 9 |
 | v5 DBSCAN + dwell/sequence | 4, 5 |
@@ -1033,11 +1103,12 @@ git tag v0.1.0-mvp
 | Idempotency + generations | 10, 12 |
 | Feedback store stub | 12 |
 | Backtest | 13 |
-| No enforcement | 14 |
+| No enforcement / no vendor lock-in | 14 |
 | ML/twin/graph/foundation/adversarial/simulator | Follow-on plans |
 
 ## Plan self-review notes
 
 - Placeholders avoided; MVP explicitly stubs Phase 2+ with `model_version=none`, `twin_version=none`.  
 - Types aligned: `AssessmentResult`, `GpsPoint`, policy dict keys used consistently.  
+- Reuse/OSS distribution (Git + pip + CSV demo) is in MVP tasks, not deferred.  
 - Absolute-ceiling items deferred to named follow-on plans rather than silently dropped.

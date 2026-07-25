@@ -1,8 +1,10 @@
 # Offline Cancel Risk Platform — Design Spec
 
 **Date:** 2026-07-25  
-**Status:** Draft for review  
+**Status:** Approved (reuse/OSS distribution addendum 2026-07-25)  
 **Project:** `~/Projects/offline-cancel-risk`  
+**Distribution:** Open-source installable toolkit — Git repo + PyPI package + CSV-only `examples/` demo  
+**License (default):** Apache-2.0 (changeable before first public publish)  
 **Source baseline:** `offline_multistop_v5_doc` (DBSCAN multistop offline confidence, ~87% accuracy / ~90% precision on 182 manual reviews)
 
 ## 1. Problem
@@ -23,13 +25,16 @@ The v5 notebook proved GPS stop clustering (DBSCAN + radius-tier confidence + ro
 
 1. Ops / logistics managers — tunable thresholds, $ at risk, market slices.
 2. Fraud / risk investigators — rare dispute packs, not a full review queue.
-3. Data / eng — async microservice, stream + table features for downstream.
-4. Generic logistics tenants — multi-tenant adapters (later phases).
+3. Data / eng — async microservice **or** library embed, stream + table features for downstream.
+4. Any logistics team — clone/pip-install, bring CSV or plug adapters (first-class, not an afterthought).
 
 ### Product goals
 
+- **Reusable by anyone:** core has zero vendor lock-in (no hardcoded company table names, host paths, or proprietary IDs in the library).
+- Ship as **(1)** public Git repo, **(2)** installable package `offline-cancel-risk`, **(3)** `examples/csv_demo` that runs end-to-end on sample CSVs with no external GPS/order APIs.
+- Pluggable adapters from MVP: GPS, order-events, publishers (stream/table). Reference adapters included; tenants add their own.
 - Async assessment only (never realtime on cancel click).
-- Produce risk **features** for downstream; this service does **not** enforce actions (no payout block, suspend, etc.).
+- Produce risk **features** for downstream; this toolkit does **not** enforce actions (no payout block, suspend, etc.).
 - Three independent soft scores + versioned policy flags + attention driven by **expected revenue at risk**.
 - Automate human toil for detection; retain a **small predetermined label quota** for ML feedback (bias / uncertainty / disagreement aware).
 - Absolute ceiling capability set: trajectory twin, entity graph, multi-signal fusion, adversarial gates, causal replacement, foundation-model track, late re-assessment, immutable ledger.
@@ -37,10 +42,11 @@ The v5 notebook proved GPS stop clustering (DBSCAN + radius-tier confidence + ro
 ### Non-goals (all phases)
 
 - Full investigator product UI beyond label tickets, threshold simulator, and dispute case packs.
-- Owning / rewriting the LBS GPS platform (integrate existing API).
-- Downstream business actions / enforcement inside this service.
+- Owning / rewriting any tenant’s LBS GPS platform (integrate via adapter).
+- Downstream business actions / enforcement inside this toolkit.
+- Bundling proprietary production datasets (examples use synthetic/sample CSVs only).
 
-**Terminology:** *MVP ship* = Phase 0–1 (rules + contracts + ledger). *Platform complete* = through Phase 4 (absolute ceiling). The output schema is stable from MVP so later phases do not break downstream consumers.
+**Terminology:** *MVP ship* = Phase 0–1 (installable package + CSV demo + rules + contracts + ledger + adapter interfaces). *Platform complete* = through Phase 4 (absolute ceiling). The output schema is stable from MVP so later phases do not break downstream consumers.
 
 ## 3. Success metrics
 
@@ -56,7 +62,9 @@ The v5 notebook proved GPS stop clustering (DBSCAN + radius-tier confidence + ro
 | Feedback quota | Sampler emits `daily_review_quota` (±1) with required strata mix |
 | Late evidence | Re-assessment creates new `assessment_generation`; prior generations retained |
 | Adversarial gate | Attack suite must not regress on promote |
-| No actions | Service never calls enforcement APIs |
+| No actions | Toolkit never calls enforcement APIs |
+| Reuse smoke | Fresh clone: `pip install -e ".[dev]"` + `python -m examples.csv_demo` produces scores from sample CSVs with no network calls |
+| Adapter isolation | Core imports never reference a specific tenant SDK; tenant code lives under `adapters/` or external packages |
 
 ## 4. Architecture
 
@@ -84,16 +92,26 @@ label feedback API ───────┘      │
 
 | Component | Responsibility |
 |---|---|
-| `assess-api` | `POST /v1/assess`, batch, job status, latest result, feedback ingest, health |
+| `offline_cancel_risk` (library) | Installable core: schemas, features, scoring, pipeline, adapter protocols |
+| `assess-api` | Optional FastAPI process: `POST /v1/assess`, batch, job status, latest, feedback, health |
 | `assess-worker` | Queue consumer, batch runner, re-assessment on late evidence |
-| `gps-adapter` | Client for existing LBS API; adaptive window; gap/sparsity metrics |
+| `adapters.gps` | Protocol + `HttpGpsClient` + `CsvGpsClient` / `FakeGpsClient` |
+| `adapters.events` | Protocol for cancel ingestion (queue / HTTP / CSV folder watcher) |
+| `adapters.publishers` | Protocol + JSONL stream + SQLite table (Kafka/WH are optional bindings) |
 | `features/*` | Twin, DBSCAN v5, lineage, graph, multi-signal, spoof |
 | `scoring/*` | Rules, ML, blend, policy, $ at risk |
 | `feedback/*` | Bias/uncertainty/disagreement sampler + label store |
-| `publishers/*` | Stream + table + label tickets |
 | `control-plane` | Threshold simulator, shadow compare, promote gates, drift monitors |
-| `policy-config` | Versioned YAML/JSON knobs |
+| `examples/csv_demo` | Zero-network demo: sample orders+GPS CSVs → printed/JSON results |
+| `policy-config` | Versioned YAML/JSON knobs (tenant overlays allowed) |
 | `models/` | Artifacts or object-store references |
+
+### Distribution model
+
+1. **Git repository** — source of truth, Apache-2.0, `CONTRIBUTING.md`, CI, examples.
+2. **PyPI package** `offline-cancel-risk` — `pip install offline-cancel-risk` exposes the library + CLI entry points.
+3. **CSV demo** — `python -m examples.csv_demo` (or `ocr-csv-demo`) runs without credentials or network.
+4. **Embed or serve** — tenants either import `assess_order(...)` in their jobs or run the bundled API/worker with their adapter config.
 
 ## 5. Data contracts
 
@@ -304,24 +322,33 @@ Plus earlier upgrade package: dwell/speed, sequence match, lineage graph, audit 
 
 ```text
 offline-cancel-risk/
-  app/
+  LICENSE
+  NOTICE
+  CONTRIBUTING.md
+  pyproject.toml          # package name: offline-cancel-risk
+  README.md               # quickstart: pip + CSV demo + API
+  src/offline_cancel_risk/
     api/
     worker/
-    gps/
+    adapters/
+      gps.py
+      events.py
+      publishers.py
     features/
     scoring/
-      dbscan_v5.py
-      rules.py
-      ml.py
-      blend.py
-      policy.py
-      ear.py
+    pipeline/
     feedback/
-    publishers/
     control_plane/
-  models/
   config/
     policy.default.yaml
+  examples/
+    csv_demo/
+      __main__.py
+      sample_orders.csv
+      sample_gps.csv
+      README.md
+  adapters/               # optional tenant reference adapters (not imported by core)
+  models/
   tests/
   scripts/
     backtest.py
@@ -331,9 +358,9 @@ offline-cancel-risk/
 
 ## 12. Phased delivery
 
-### Phase 0 — Skeleton
+### Phase 0 — Skeleton (reusable package)
 
-API, worker, GPS adapter, stream+table publishers, policy config, idempotent assess, health.
+Installable `src/offline_cancel_risk` package, LICENSE/CONTRIBUTING, adapter protocols, CSV GPS/orders clients, JSONL+SQLite publishers, policy config, idempotent assess, optional API/worker, health, `examples/csv_demo` zero-network run.
 
 ### Phase 1 — Detection core
 
@@ -359,8 +386,9 @@ API, worker, GPS adapter, stream+table publishers, policy config, idempotent ass
 - Drift monitors tilting quotas.
 - Threshold simulator (FP$ constrained).
 - Feature store (batch ≡ stream).
-- Multi-tenant order/LBS adapters.
+- Additional production adapter bindings (Kafka, warehouse DDL templates) — core protocols already exist from Phase 0.
 - Adversarial suite in CI promote path.
+- PyPI publish automation (trusted publishing / tags).
 
 ### Phase 4 — Excellence track (absolute ceiling)
 
@@ -416,6 +444,9 @@ These are external bindings, not unspecified product behavior:
 | Reviews | Predetermined bias/uncertainty quota for ML only |
 | Scope ambition | Absolute ceiling; all excellence pillars in phased scope |
 | Project path | `~/Projects/offline-cancel-risk` |
+| Distribution | OSS Git + PyPI package + CSV-only examples demo |
+| License default | Apache-2.0 |
+| Tenant integration | Adapter protocols from MVP; core has no vendor lock-in |
 
 ## 17. References
 
