@@ -4,7 +4,7 @@ from pathlib import Path
 from examples.csv_demo.__main__ import run_demo
 
 
-def test_csv_demo_produces_three_heads(tmp_path, monkeypatch):
+def test_csv_demo_produces_three_heads(tmp_path):
     out = tmp_path / "out.json"
     summary = run_demo(
         orders_path=Path("examples/csv_demo/sample_orders.csv"),

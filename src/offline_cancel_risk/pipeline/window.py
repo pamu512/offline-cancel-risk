@@ -5,22 +5,16 @@ from datetime import datetime, timedelta
 from typing import Any, Awaitable, Callable
 
 from offline_cancel_risk.domain.models import GpsPoint
+from offline_cancel_risk.timeutil import parse_ts
 
 # ponytail: 5m post-cancel buffer; if policy grows a buffer key, read it there.
 _SMALL_BUFFER = timedelta(minutes=5)
 
 
-def _parse_ts(ts: str) -> datetime:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return datetime.fromisoformat(ts)
-
-
 def _max_gap_minutes(points: list[GpsPoint], start: datetime, end: datetime) -> float:
     if not points:
         return (end - start).total_seconds() / 60.0
-    times = sorted(_parse_ts(p.ts) for p in points)
+    times = sorted(parse_ts(p.ts) for p in points)
     gaps = [(times[0] - start).total_seconds()]
     for a, b in zip(times, times[1:]):
         gaps.append((b - a).total_seconds())

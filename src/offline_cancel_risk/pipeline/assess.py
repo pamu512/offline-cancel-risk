@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timezone
 from typing import Any
 
@@ -19,7 +20,10 @@ from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
 from offline_cancel_risk.features.dwell import dwell_stop_mask
 from offline_cancel_risk.features.geo import haversine, parse_latlong
 from offline_cancel_risk.features.lineage import build_lineage_id
-from offline_cancel_risk.features.replacement import evaluate_replacement
+from offline_cancel_risk.features.replacement import (
+    compute_route_similarity,
+    evaluate_replacement,
+)
 from offline_cancel_risk.features.sequence import sequence_match_score
 from offline_cancel_risk.features.theft import theft_feature_score
 from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
@@ -28,16 +32,11 @@ from offline_cancel_risk.scoring.blend import blend_scores
 from offline_cancel_risk.scoring.ear import compute_ear
 from offline_cancel_risk.scoring.policy import apply_thresholds, policy_hash
 from offline_cancel_risk.scoring.rules import compute_rule_scores
+from offline_cancel_risk.timeutil import parse_ts
 
 _MODEL_VERSION = "none"
 _DEFAULT_GENERATION = 1
-
-
-def _parse_ts(ts: str) -> datetime:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return datetime.fromisoformat(ts)
+_LOG = logging.getLogger(__name__)
 
 
 def _order_still_active(status: str) -> bool:
@@ -57,7 +56,7 @@ def _cancel_near_destination(
 ) -> bool:
     if not points or not stops:
         return False
-    last = max(points, key=lambda p: _parse_ts(p.ts))
+    last = max(points, key=lambda p: parse_ts(p.ts))
     dest_lat, dest_lon = stops[-1]
     return haversine(last.lat, last.lon, dest_lat, dest_lon) <= near_dest_radius_m
 
@@ -65,7 +64,7 @@ def _cancel_near_destination(
 def _replacement_delay_minutes(req: AssessRequest) -> float | None:
     if not req.replacement_placed_at:
         return None
-    delta = _parse_ts(req.replacement_placed_at) - _parse_ts(req.cancel_ts)
+    delta = parse_ts(req.replacement_placed_at) - parse_ts(req.cancel_ts)
     return delta.total_seconds() / 60.0
 
 
@@ -95,11 +94,23 @@ async def assess_order(
         return cached
 
     gps_policy = policy["gps"]
-    assign_ts = _parse_ts(req.assign_ts)
-    cancel_ts = _parse_ts(req.cancel_ts)
+    assign_ts = parse_ts(req.assign_ts)
+    cancel_ts = parse_ts(req.cancel_ts)
+    gps_unavailable = False
 
     async def fetch(start: datetime, end: datetime) -> list[GpsPoint]:
-        return await gps_client.fetch_track(req.driver_id, start, end)
+        nonlocal gps_unavailable
+        try:
+            return await gps_client.fetch_track(req.driver_id, start, end)
+        except Exception:
+            # MVP: degrade to empty track; worker still returns an assessment.
+            gps_unavailable = True
+            _LOG.exception(
+                "GPS fetch failed for order=%s driver=%s; continuing with empty points",
+                req.order_display_id,
+                req.driver_id,
+            )
+            return []
 
     window = await resolve_gps_window(
         anchor_start=assign_ts,
@@ -141,10 +152,17 @@ async def assess_order(
     original_reached_destination = last_conf >= conf_threshold or last_dwell
 
     has_replacement = bool(req.replacement_order_id)
+    route_similarity: float | None = None
+    if req.replacement_latlong:
+        route_similarity = compute_route_similarity(
+            stops,
+            parse_latlong(req.replacement_latlong),
+            float(policy["sequence"]["stop_match_radius_m"]),
+        )
     replacement = evaluate_replacement(
         original_reached_destination=original_reached_destination,
         replacement_placed_delay_minutes=_replacement_delay_minutes(req),
-        route_similarity=None,
+        route_similarity=route_similarity,
         has_replacement=has_replacement,
         policy=policy["replacement"],
     )
@@ -191,6 +209,8 @@ async def assess_order(
         "replacement_reasons": list(replacement.reason_codes),
     }
     rule_scores, reasons = compute_rule_scores(features, policy)
+    if gps_unavailable:
+        reasons = [*reasons, "gps_unavailable"]
     if sparse:
         reasons = [*reasons, "gps_sparse"]
     if float(gps_window["max_gap_minutes"]) > float(gps_policy["max_gap_minutes"]):
@@ -225,7 +245,7 @@ async def assess_order(
         gps_window=gps_window,
         lineage_id=lineage_id,
         assessment_generation=generation,
-        provisional=sparse,
+        provisional=sparse or gps_unavailable,
         policy_hash=phash,
         model_version=model_version,
         twin_version="none",
@@ -234,6 +254,14 @@ async def assess_order(
         assessed_at=assessed_at,
     )
 
-    stream.publish(result)
+    # Dual-write: table first so idempotent cache survives stream failures.
     table.upsert(result)
+    try:
+        stream.publish(result)
+    except Exception:
+        _LOG.exception(
+            "Stream publish failed after table upsert for order=%s; "
+            "idempotent cache still protects recomputation",
+            req.order_display_id,
+        )
     return result

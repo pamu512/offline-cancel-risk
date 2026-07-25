@@ -8,13 +8,7 @@ from typing import Protocol
 import httpx
 
 from offline_cancel_risk.domain.models import GpsPoint
-
-
-def _parse_ts(ts: str) -> datetime:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return datetime.fromisoformat(ts)
+from offline_cancel_risk.timeutil import parse_ts
 
 
 def map_gps_json(items: list[dict]) -> list[GpsPoint]:
@@ -50,7 +44,7 @@ class FakeGpsClient:
         return [
             p
             for p in self._points
-            if start <= _parse_ts(p.ts) <= end
+            if start <= parse_ts(p.ts) <= end
         ]
 
 
@@ -94,7 +88,7 @@ class CsvGpsClient:
         return [
             point
             for did, point in self._load()
-            if did == driver_id and start <= _parse_ts(point.ts) <= end
+            if did == driver_id and start <= parse_ts(point.ts) <= end
         ]
 
 

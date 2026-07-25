@@ -1,4 +1,3 @@
-from datetime import datetime
 from statistics import mean
 from typing import Any
 
@@ -7,13 +6,7 @@ from sklearn.cluster import DBSCAN
 
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.geo import haversine
-
-
-def _parse_ts(ts: str) -> datetime:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return datetime.fromisoformat(ts)
+from offline_cancel_risk.timeutil import parse_ts
 
 
 def compute_stop_confidences(
@@ -81,7 +74,7 @@ def compute_stop_confidences(
         gap_seconds = policy["round_trip_gap_seconds"]
         pk_lat, pk_lon = stops[0]
         near_pk_times = sorted(
-            _parse_ts(p.ts)
+            parse_ts(p.ts)
             for p in points
             if haversine(p.lat, p.lon, pk_lat, pk_lon) < extended_r
         )

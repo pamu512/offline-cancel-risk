@@ -1,15 +1,8 @@
-from datetime import datetime
 from typing import Any
 
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.geo import haversine
-
-
-def _parse_ts(ts: str) -> datetime:
-    try:
-        return datetime.strptime(ts, "%Y-%m-%d %H:%M:%S")
-    except ValueError:
-        return datetime.fromisoformat(ts)
+from offline_cancel_risk.timeutil import parse_ts
 
 
 def sequence_match_score(
@@ -21,7 +14,7 @@ def sequence_match_score(
         return 0.0
 
     radius_m = policy["stop_match_radius_m"]
-    ordered = sorted(points, key=lambda p: _parse_ts(p.ts))
+    ordered = sorted(points, key=lambda p: parse_ts(p.ts))
     matched = 0
     cursor = 0
     for stop_lat, stop_lon in stops:

@@ -1,4 +1,15 @@
-from offline_cancel_risk.features.replacement import evaluate_replacement
+from offline_cancel_risk.features.replacement import (
+    compute_route_similarity,
+    evaluate_replacement,
+)
+
+
+def test_compute_route_similarity_fraction_matched():
+    original = [(1.0, 2.0), (1.01, 2.0)]
+    replacement = [(1.0, 2.0), (1.01, 2.0)]
+    assert compute_route_similarity(original, replacement, 150.0) == 1.0
+    far = [(9.0, 9.0), (9.1, 9.0)]
+    assert compute_route_similarity(original, far, 150.0) == 0.0
 
 
 def test_valid_via_gps_path_only():
