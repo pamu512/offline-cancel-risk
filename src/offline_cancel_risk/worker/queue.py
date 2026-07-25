@@ -8,6 +8,9 @@ from uuid import uuid4
 from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.models.canary import CanaryController
+from offline_cancel_risk.models.metrics import ShadowMetricsStore
+from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.pipeline.assess import assess_order
 
 
@@ -46,12 +49,22 @@ class AssessJobQueue:
         policy: dict[str, Any],
         stream: StreamPublisher,
         table: TablePublisher,
+        registry: ModelRegistry | None = None,
+        shadow_metrics: ShadowMetricsStore | None = None,
+        canary: CanaryController | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
         try:
             job.result = await assess_order(
-                job.request, gps_client, policy, stream=stream, table=table
+                job.request,
+                gps_client,
+                policy,
+                stream=stream,
+                table=table,
+                registry=registry,
+                shadow_metrics=shadow_metrics,
+                canary=canary,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -66,6 +79,9 @@ class AssessJobQueue:
         policy: dict[str, Any],
         stream: StreamPublisher,
         table: TablePublisher,
+        registry: ModelRegistry | None = None,
+        shadow_metrics: ShadowMetricsStore | None = None,
+        canary: CanaryController | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -76,6 +92,9 @@ class AssessJobQueue:
                     policy=policy,
                     stream=stream,
                     table=table,
+                    registry=registry,
+                    shadow_metrics=shadow_metrics,
+                    canary=canary,
                 )
             finally:
                 self._queue.task_done()

@@ -79,6 +79,22 @@ OCR_SYNC_ASSESS=1 uvicorn offline_cancel_risk.main:app --reload
 
 Configure tenant GPS and paths via `OCR_*` environment variables; default policy lives at `config/policy.default.yaml`.
 
+### Model sideload / shadow / canary
+
+Bundle layout: `model.json` (`format`: `joblib`|`onnx`) + artifact + `feature_schema.json` + `metrics_baseline.json`.
+
+```bash
+# Sideload a challenger (shadow by default)
+curl -X POST localhost:8000/v1/models \
+  -H 'content-type: application/json' \
+  -d '{"bundle_path":"/path/to/bundle","role":"shadow"}'
+
+# Evaluate promote gates (auto-starts canary when ready; defaults 5% / 24h)
+curl -X POST localhost:8000/v1/models/{id}/evaluate
+```
+
+Serving flags use the champion (or canary cohort when active). Shadow scores are recorded on each assess without changing flags outside the canary.
+
 ## License
 
 Apache License 2.0 — see [LICENSE](LICENSE) and [NOTICE](NOTICE).

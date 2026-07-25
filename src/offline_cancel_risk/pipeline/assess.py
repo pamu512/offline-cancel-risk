@@ -28,6 +28,7 @@ from offline_cancel_risk.features.sequence import sequence_match_score
 from offline_cancel_risk.features.theft import theft_feature_score
 from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
 from offline_cancel_risk.pipeline.window import resolve_gps_window
+from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.scoring.blend import blend_scores
@@ -95,6 +96,7 @@ async def assess_order(
     generation: int = _DEFAULT_GENERATION,
     registry: ModelRegistry | None = None,
     shadow_metrics: ShadowMetricsStore | None = None,
+    canary: CanaryController | None = None,
 ) -> AssessmentResult:
     phash = policy_hash(policy)
     # Resolve serving model id up front for idempotency key stability.
@@ -102,6 +104,15 @@ async def assess_order(
     serving_model_id = (
         champion_rec.model_id if champion_rec is not None else model_version
     )
+    canary_state = canary.active() if canary is not None else None
+    use_canary = False
+    if (
+        canary_state is not None
+        and registry is not None
+        and in_canary_cohort(req.order_display_id, canary_state.canary_pct)
+    ):
+        use_canary = True
+        serving_model_id = canary_state.challenger_model_id
     key = make_idempotency_key(
         req.order_display_id, phash, serving_model_id, generation
     )
@@ -249,19 +260,30 @@ async def assess_order(
     shadow_scores: dict[str, ThreeHeadScores] = {}
     model_roles: dict[str, str] = {}
 
-    if registry is not None and champion_rec is not None:
+    serve_model_id = serving_model_id
+    predict_id: str | None = None
+    if registry is not None:
+        if use_canary and canary_state is not None:
+            predict_id = canary_state.challenger_model_id
+        elif champion_rec is not None:
+            predict_id = champion_rec.model_id
+    if registry is not None and predict_id is not None:
         try:
             ml_scores = {
                 k: float(v)
-                for k, v in registry.predict(
-                    champion_rec.model_id, ml_feature_vec
-                ).items()
+                for k, v in registry.predict(predict_id, ml_feature_vec).items()
             }
-            model_roles[champion_rec.model_id] = "champion"
+            if use_canary:
+                model_roles[predict_id] = "canary"
+                if champion_rec is not None:
+                    model_roles[champion_rec.model_id] = "champion"
+            else:
+                model_roles[predict_id] = "champion"
+            serve_model_id = predict_id
         except Exception:
             _LOG.exception(
-                "Champion model predict failed for %s; falling back to rules",
-                champion_rec.model_id,
+                "Serving model predict failed for %s; falling back to rules",
+                predict_id,
             )
             reasons = [*reasons, "champion_predict_failed"]
 
@@ -269,6 +291,19 @@ async def assess_order(
     flags = apply_thresholds(scores, policy)
 
     if registry is not None:
+        # Always compute champion blended scores for shadow comparison baseline
+        champion_scores_for_metrics = scores
+        if champion_rec is not None and (
+            use_canary or serve_model_id != champion_rec.model_id
+        ):
+            try:
+                champ_ml = registry.predict(champion_rec.model_id, ml_feature_vec)
+                champion_scores_for_metrics = blend_scores(
+                    rule_scores, champ_ml, policy
+                )
+            except Exception:
+                champion_scores_for_metrics = scores
+
         for shadow in registry.list_shadow():
             try:
                 shadow_ml = registry.predict(shadow.model_id, ml_feature_vec)
@@ -278,9 +313,11 @@ async def assess_order(
                 if shadow_metrics is not None:
                     shadow_metrics.record(
                         order_display_id=req.order_display_id,
-                        champion_model_id=serving_model_id,
+                        champion_model_id=(
+                            champion_rec.model_id if champion_rec else "none"
+                        ),
                         shadow_model_id=shadow.model_id,
-                        champion_scores=scores,
+                        champion_scores=champion_scores_for_metrics,
                         shadow_scores=shadow_blended,
                         order_value=float(req.order_value),
                     )
@@ -290,6 +327,35 @@ async def assess_order(
                     shadow.model_id,
                 )
                 reasons = [*reasons, f"shadow_predict_failed:{shadow.model_id}"]
+
+        # Also record canary challenger against champion when not in cohort
+        if (
+            canary_state is not None
+            and not use_canary
+            and shadow_metrics is not None
+            and champion_rec is not None
+        ):
+            try:
+                chal_ml = registry.predict(
+                    canary_state.challenger_model_id, ml_feature_vec
+                )
+                chal_blended = blend_scores(rule_scores, chal_ml, policy)
+                shadow_scores[canary_state.challenger_model_id] = ThreeHeadScores(
+                    **chal_blended
+                )
+                model_roles.setdefault(
+                    canary_state.challenger_model_id, "canary"
+                )
+                shadow_metrics.record(
+                    order_display_id=req.order_display_id,
+                    champion_model_id=champion_rec.model_id,
+                    shadow_model_id=canary_state.challenger_model_id,
+                    champion_scores=champion_scores_for_metrics,
+                    shadow_scores=chal_blended,
+                    order_value=float(req.order_value),
+                )
+            except Exception:
+                _LOG.exception("Canary shadow record failed")
 
     ear, attention = compute_ear(scores, req.order_value, policy)
     ear_total = float(sum(ear.values()))
@@ -315,7 +381,7 @@ async def assess_order(
         assessment_generation=generation,
         provisional=sparse or gps_unavailable,
         policy_hash=phash,
-        model_version=serving_model_id,
+        model_version=serve_model_id,
         twin_version="none",
         graph_version="lineage-v0",
         feature_vector_ref=f"mem:{req.order_display_id}:{generation}",

@@ -43,11 +43,15 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             policy=request.app.state.policy,
             stream=request.app.state.stream,
             table=request.app.state.table,
+            registry=getattr(request.app.state, "registry", None),
+            shadow_metrics=getattr(request.app.state, "shadow_metrics", None),
+            canary=getattr(request.app.state, "canary", None),
         )
     else:
         queue.schedule(job_id)
     job = queue.get(job_id)
-    assert job is not None
+    if job is None:
+        raise HTTPException(status_code=500, detail="job missing after enqueue")
     return {"job_id": job_id, "status": job.status}
 
 
@@ -100,3 +104,121 @@ async def get_generations(
 async def feedback_upsert(body: FeedbackRequest, request: Request) -> dict[str, bool]:
     request.app.state.table.upsert_feedback(body.order_display_id, body.labels)
     return {"ok": True}
+
+
+class SideloadRequest(BaseModel):
+    bundle_path: str
+    role: str = "shadow"
+
+
+def _require_auth(request: Request) -> None:
+    settings = request.app.state.settings
+    if not settings.auth_required:
+        return
+    keys = {k.strip() for k in settings.api_keys.split(",") if k.strip()}
+    auth = request.headers.get("authorization", "")
+    token = ""
+    if auth.lower().startswith("bearer "):
+        token = auth.split(" ", 1)[1].strip()
+    else:
+        token = request.headers.get("x-api-key", "").strip()
+    if not keys or token not in keys:
+        raise HTTPException(status_code=401, detail="unauthorized")
+
+
+@router.get("/models")
+async def list_models(request: Request) -> list[dict[str, str]]:
+    _require_auth(request)
+    return [
+        {
+            "model_id": m.model_id,
+            "format": m.format,
+            "role": m.role,
+            "feature_schema_version": m.feature_schema_version,
+            "created_at": m.created_at,
+        }
+        for m in request.app.state.registry.list_models()
+    ]
+
+
+@router.post("/models")
+async def sideload_model(body: SideloadRequest, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    role = body.role if body.role in {
+        "champion", "shadow", "canary", "retired", "failed_canary"
+    } else "shadow"
+    rec = request.app.state.registry.sideload(body.bundle_path, role=role)  # type: ignore[arg-type]
+    return {
+        "model_id": rec.model_id,
+        "role": rec.role,
+        "format": rec.format,
+        "bundle_path": rec.bundle_path,
+    }
+
+
+@router.get("/models/{model_id}")
+async def get_model(model_id: str, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    try:
+        rec = request.app.state.registry.get(model_id)
+    except Exception as exc:
+        raise HTTPException(status_code=404, detail=str(exc)) from exc
+    promo = request.app.state.canary.latest_promotion_status(model_id)
+    return {
+        "model_id": rec.model_id,
+        "format": rec.format,
+        "role": rec.role,
+        "feature_schema_version": rec.feature_schema_version,
+        "created_at": rec.created_at,
+        "promotion": promo,
+        "canary_active": (
+            request.app.state.canary.active().challenger_model_id == model_id
+            if request.app.state.canary.active()
+            else False
+        ),
+    }
+
+
+@router.post("/models/{model_id}/evaluate")
+async def evaluate_model(model_id: str, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    status = request.app.state.canary.evaluate_and_maybe_start_canary(model_id)
+    return {
+        "challenger_model_id": status.challenger_model_id,
+        "champion_model_id": status.champion_model_id,
+        "promotion_ready": status.promotion_ready,
+        "promotion_blockers": status.promotion_blockers,
+        "metrics": status.metrics,
+        "recommended_action": status.recommended_action,
+    }
+
+
+@router.post("/models/{model_id}/canary/start")
+async def canary_start(model_id: str, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    state = request.app.state.canary.start_canary(model_id)
+    return {
+        "challenger_model_id": state.challenger_model_id,
+        "status": state.status,
+        "canary_pct": state.canary_pct,
+        "canary_hours": state.canary_hours,
+        "started_at": state.started_at,
+    }
+
+
+@router.post("/models/{model_id}/canary/abort")
+async def canary_abort(model_id: str, request: Request) -> dict[str, bool]:
+    _require_auth(request)
+    del model_id  # abort active canary regardless of path id
+    request.app.state.canary.abort()
+    return {"ok": True}
+
+
+@router.post("/models/{model_id}/promote")
+async def force_promote(model_id: str, request: Request) -> dict[str, str]:
+    _require_auth(request)
+    champ = request.app.state.registry.get_champion()
+    if champ is not None:
+        request.app.state.registry.set_role(champ.model_id, "retired")
+    request.app.state.registry.set_role(model_id, "champion")
+    return {"model_id": model_id, "role": "champion"}

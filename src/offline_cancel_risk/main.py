@@ -9,6 +9,9 @@ from fastapi import FastAPI
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient, HttpGpsClient
 from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
 from offline_cancel_risk.api.routes import router
+from offline_cancel_risk.models.canary import CanaryController
+from offline_cancel_risk.models.metrics import ShadowMetricsStore
+from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.settings import Settings, get_settings, load_policy
 from offline_cancel_risk.worker.queue import AssessJobQueue
 
@@ -28,12 +31,25 @@ def create_app(
     settings: Settings | None = None,
     stream: JsonlStreamPublisher | None = None,
     table: SqliteTablePublisher | None = None,
+    registry: ModelRegistry | None = None,
+    shadow_metrics: ShadowMetricsStore | None = None,
+    canary: CanaryController | None = None,
 ) -> FastAPI:
     settings = settings or get_settings()
     gps = gps_client if gps_client is not None else _default_gps_client(settings)
     stream_pub = stream or JsonlStreamPublisher(stream_path=settings.stream_path)
     table_pub = table or SqliteTablePublisher(sqlite_path=settings.sqlite_path)
     policy = load_policy(settings.policy_path)
+    gates = load_policy(settings.promote_gates_path)
+    reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
+    metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
+    canary_ctrl = canary or CanaryController(
+        settings.canary_sqlite_path,
+        reg,
+        metrics,
+        gates=gates,
+        thresholds={k: float(v) for k, v in policy["thresholds"].items()},
+    )
     queue = AssessJobQueue()
 
     @asynccontextmanager
@@ -46,6 +62,9 @@ def create_app(
                     policy=policy,
                     stream=stream_pub,
                     table=table_pub,
+                    registry=reg,
+                    shadow_metrics=metrics,
+                    canary=canary_ctrl,
                 )
             )
         try:
@@ -64,7 +83,11 @@ def create_app(
     app.state.stream = stream_pub
     app.state.table = table_pub
     app.state.policy = policy
+    app.state.gates = gates
     app.state.queue = queue
+    app.state.registry = reg
+    app.state.shadow_metrics = metrics
+    app.state.canary = canary_ctrl
     app.include_router(router)
     return app
 

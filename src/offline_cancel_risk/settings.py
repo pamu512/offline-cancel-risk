@@ -9,11 +9,18 @@ ROOT = Path(__file__).resolve().parents[2]
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_prefix="OCR_")
     policy_path: str = str(ROOT / "config" / "policy.default.yaml")
+    promote_gates_path: str = str(ROOT / "config" / "promote_gates.default.yaml")
     sqlite_path: str = str(ROOT / "data" / "assessments.db")
     stream_path: str = str(ROOT / "data" / "risk_events.jsonl")
+    models_sqlite_path: str = str(ROOT / "data" / "models.db")
+    models_root: str = str(ROOT / "data" / "models")
+    shadow_metrics_path: str = str(ROOT / "data" / "shadow_metrics.db")
+    canary_sqlite_path: str = str(ROOT / "data" / "canary.db")
     gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
     gps_api_key: str = ""
     sync_assess: bool = False
+    auth_required: bool = False
+    api_keys: str = ""  # comma-separated when auth_required
 
 @lru_cache
 def get_settings() -> Settings:
