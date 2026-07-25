@@ -20,6 +20,13 @@ class Settings(BaseSettings):
     models_root: str = str(ROOT / "data" / "models")
     shadow_metrics_path: str = str(ROOT / "data" / "shadow_metrics.db")
     canary_sqlite_path: str = str(ROOT / "data" / "canary.db")
+    control_plane_sqlite_path: str = str(ROOT / "data" / "control_plane.db")
+    operating_point_path: str = str(
+        ROOT / "config" / "operating_point.default.yaml"
+    )
+    tuner_min_labeled: int = 30
+    tuner_cooldown_minutes: int = 60
+    tuner_min_f1_lift: float = 0.01
     gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
     gps_api_key: str = ""
     sync_assess: bool = False

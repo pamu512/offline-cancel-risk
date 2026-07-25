@@ -6,6 +6,8 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.control_plane.metrics import compute_label_metrics
+from offline_cancel_risk.control_plane.tuner import TunerContext, run_tuner
 from offline_cancel_risk.policy.resolve import GuardrailError
 from offline_cancel_risk.policy.service import (
     resolved_policy_for_market,
@@ -35,6 +37,31 @@ class PolicyOverlayIngestRequest(BaseModel):
     region_code: str
     city_code: str = ""
     overlay: dict[str, Any] = Field(default_factory=dict)
+
+
+class ForecastIngestRequest(BaseModel):
+    rows: list[dict[str, Any]] = Field(default_factory=list)
+
+
+class HardgateIngestRequest(BaseModel):
+    region_code: str
+    city_code: str = ""
+    window: str
+    max_enforcements: int
+    heads: list[str] = Field(default_factory=lambda: ["*"])
+    actor: str = "ops"
+
+
+class ClawbackRequest(BaseModel):
+    region_code: str
+    city_code: str = ""
+    ttl_minutes: int = 60
+    reason: str = "clawback"
+
+
+class TuningRunRequest(BaseModel):
+    region_code: str
+    city_code: str = ""
 
 
 router = APIRouter(prefix="/v1")
@@ -292,8 +319,9 @@ async def ingest_policy_overlay(
     Empty city_code = region-wide overlay. City overlay wins over region.
     """
     _require_auth(request)
+    before = request.app.state.overlays.get(body.region_code, body.city_code)
     try:
-        return save_overlay(
+        saved = save_overlay(
             request.app.state.overlays,
             request.app.state.guardrails,
             region_code=body.region_code,
@@ -302,6 +330,17 @@ async def ingest_policy_overlay(
         )
     except GuardrailError as exc:
         raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.app.state.audit.append(
+        actor="manual_overlay",
+        action="apply",
+        region_code=body.region_code,
+        city_code=body.city_code,
+        before=before,
+        after=body.overlay,
+        decision="accepted",
+        reason="manual_ingest",
+    )
+    return saved
 
 
 @router.delete("/policy/overlays/{region_code}")
@@ -313,3 +352,186 @@ async def delete_policy_overlay(
     if not deleted:
         raise HTTPException(status_code=404, detail="overlay not found")
     return {"ok": True}
+
+
+@router.put("/supply/forecast")
+async def put_supply_forecast(
+    body: ForecastIngestRequest, request: Request
+) -> dict[str, int]:
+    _require_auth(request)
+    n = request.app.state.forecast.upsert(body.rows)
+    request.app.state.audit.append(
+        actor="ops_ingest",
+        action="forecast_ingest",
+        after={"count": n},
+        decision="recorded",
+        reason="forecast_upsert",
+    )
+    return {"upserted": n}
+
+
+@router.get("/supply/forecast")
+async def get_supply_forecast(
+    request: Request, limit: int = 100
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    return request.app.state.forecast.list_all(limit=limit)
+
+
+@router.put("/enforcement/hardgates")
+async def put_hardgates(
+    body: HardgateIngestRequest, request: Request
+) -> dict[str, Any]:
+    _require_auth(request)
+    try:
+        request.app.state.hardgates.upsert(
+            body.region_code,
+            body.city_code,
+            window=body.window,
+            max_enforcements=body.max_enforcements,
+            heads=body.heads,
+            actor=body.actor,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+    request.app.state.audit.append(
+        actor=body.actor,
+        action="hardgate_ingest",
+        region_code=body.region_code,
+        city_code=body.city_code,
+        after=body.model_dump(),
+        decision="recorded",
+        reason="hardgate_upsert",
+    )
+    return {
+        "region_code": body.region_code.strip().upper(),
+        "city_code": body.city_code.strip().upper(),
+        "windows": request.app.state.hardgates.get(body.region_code, body.city_code),
+    }
+
+
+@router.get("/enforcement/hardgates")
+async def get_hardgates(
+    request: Request, region_code: str, city_code: str = ""
+) -> dict[str, Any]:
+    _require_auth(request)
+    return {
+        "region_code": region_code.strip().upper(),
+        "city_code": city_code.strip().upper(),
+        "windows": request.app.state.hardgates.get(region_code, city_code),
+    }
+
+
+@router.post("/enforcement/clawback")
+async def post_clawback(body: ClawbackRequest, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    state = request.app.state.hardgates.record_clawback(
+        body.region_code,
+        body.city_code,
+        ttl_minutes=body.ttl_minutes,
+        reason=body.reason,
+    )
+    request.app.state.audit.append(
+        actor="ops_ingest",
+        action="clawback_signal",
+        region_code=body.region_code,
+        city_code=body.city_code,
+        after=state,
+        decision="recorded",
+        reason=body.reason,
+    )
+    return state
+
+
+@router.get("/metrics/labels")
+async def get_label_metrics(
+    request: Request,
+    region_code: str = "",
+    city_code: str = "",
+    limit: int = 50,
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    return request.app.state.label_metrics.latest(
+        region_code=region_code, city_code=city_code, limit=limit
+    )
+
+
+@router.post("/tuning/run")
+async def run_tuning(body: TuningRunRequest, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    settings = request.app.state.settings
+    table = request.app.state.table
+    feedback = table.list_feedback()
+    assessments = []
+    for result in table.list_latest_assessments():
+        assessments.append(
+            {
+                "order_display_id": result.order_display_id,
+                "region_code": result.region_code,
+                "city_code": result.city_code,
+                "scores": result.scores.model_dump(),
+            }
+        )
+    resolved = resolved_policy_for_market(
+        request.app.state.policy,
+        request.app.state.overlays,
+        region_code=body.region_code,
+        city_code=body.city_code or None,
+    )
+    snapshots = compute_label_metrics(
+        assessments,
+        feedback,
+        thresholds={k: float(v) for k, v in (resolved.get("thresholds") or {}).items()},
+        region_code=body.region_code,
+        city_code=body.city_code,
+    )
+    request.app.state.label_metrics.save_snapshots(snapshots)
+    request.app.state.audit.append(
+        actor="tuner",
+        action="metrics_snapshot",
+        region_code=body.region_code,
+        city_code=body.city_code,
+        after={"heads": [s["head"] for s in snapshots]},
+        decision="recorded",
+        reason="tuning_run",
+    )
+    decisions = run_tuner(
+        TunerContext(
+            base_policy=request.app.state.policy,
+            guardrails=request.app.state.guardrails,
+            overlays=request.app.state.overlays,
+            audit=request.app.state.audit,
+            forecast=request.app.state.forecast,
+            hardgates=request.app.state.hardgates,
+            op_cfg=request.app.state.operating_point_cfg,
+            assessments=assessments,
+            feedback=feedback,
+            region_code=body.region_code,
+            city_code=body.city_code,
+            min_labeled=settings.tuner_min_labeled,
+            cooldown_minutes=settings.tuner_cooldown_minutes,
+            min_f1_lift=settings.tuner_min_f1_lift,
+        )
+    )
+    return {"metrics": snapshots, "decisions": decisions}
+
+
+@router.get("/tuning/suggestions")
+async def get_tuning_suggestions(
+    request: Request, limit: int = 50
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    rows = request.app.state.audit.list_entries(limit=limit * 3)
+    return [
+        r
+        for r in rows
+        if r["action"] in {"suggest", "apply", "reject"}
+    ][:limit]
+
+
+@router.get("/audit/policy")
+async def get_policy_audit(
+    request: Request, limit: int = 100, action: str | None = None
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    return request.app.state.audit.list_entries(limit=limit, action=action)

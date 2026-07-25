@@ -9,6 +9,10 @@ from fastapi import FastAPI
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient, HttpGpsClient
 from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
 from offline_cancel_risk.api.routes import router
+from offline_cancel_risk.control_plane.audit import PolicyAuditLog
+from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
+from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
+from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
@@ -45,6 +49,12 @@ def create_app(
     guardrails = load_policy(settings.policy_guardrails_path)
     gates = load_policy(settings.promote_gates_path)
     overlay_store = overlays or PolicyOverlayStore(settings.policy_overlays_path)
+    cp_path = settings.control_plane_sqlite_path
+    audit_log = PolicyAuditLog(cp_path)
+    forecast_store = SupplyForecastStore(cp_path)
+    hardgate_store = EnforcementHardgateStore(cp_path)
+    label_metrics_store = LabelMetricsStore(cp_path)
+    operating_point_cfg = load_policy(settings.operating_point_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -90,6 +100,11 @@ def create_app(
     app.state.policy = policy
     app.state.guardrails = guardrails
     app.state.overlays = overlay_store
+    app.state.audit = audit_log
+    app.state.forecast = forecast_store
+    app.state.hardgates = hardgate_store
+    app.state.label_metrics = label_metrics_store
+    app.state.operating_point_cfg = operating_point_cfg
     app.state.gates = gates
     app.state.queue = queue
     app.state.registry = reg

@@ -1,0 +1,21 @@
+ratio_min: 0.5
+ratio_max: 2.0
+# Anchors: low ratio = peak/tight supply; high = surplus
+peak:
+  ratio: 0.8
+  min_precision: 0.85
+  min_recall: 0.40
+  max_precision: 1.0
+  max_recall: 0.70
+surplus:
+  ratio: 1.2
+  min_precision: 0.70
+  min_recall: 0.75
+  # Ceiling stays open; surplus loosens the floor, it does not forbid high precision.
+  max_precision: 1.0
+  max_recall: 1.0
+fallback_when_no_forecast:
+  min_precision: 0.75
+  min_recall: 0.50
+  max_precision: 1.0
+  max_recall: 1.0

@@ -167,7 +167,7 @@ surplus:   # supply_ratio >= surplus.ratio
   ratio: 1.2
   min_precision: 0.70
   min_recall: 0.75
-  max_precision: 0.95
+  max_precision: 1.0
   max_recall: 1.0
 # Between anchors: piecewise-linear interpolation of the four bounds
 fallback_when_no_forecast:

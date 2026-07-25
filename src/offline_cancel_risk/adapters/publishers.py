@@ -171,3 +171,33 @@ class SqliteTablePublisher:
                 (order_display_id, json.dumps(labels), created_at),
             )
             conn.commit()
+
+    def list_feedback(self) -> list[dict[str, Any]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT order_display_id, labels, created_at FROM feedback"
+            ).fetchall()
+        out: list[dict[str, Any]] = []
+        for order_display_id, labels, created_at in rows:
+            parsed = json.loads(labels)
+            out.append(
+                {
+                    "order_display_id": order_display_id,
+                    "labels": parsed if isinstance(parsed, dict) else {},
+                    "created_at": created_at,
+                }
+            )
+        return out
+
+    def list_latest_assessments(self) -> list[AssessmentResult]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT payload_json FROM assessments a
+                WHERE assessment_generation = (
+                  SELECT MAX(b.assessment_generation) FROM assessments b
+                  WHERE b.order_display_id = a.order_display_id
+                )
+                """
+            ).fetchall()
+        return [AssessmentResult.model_validate_json(r[0]) for r in rows]

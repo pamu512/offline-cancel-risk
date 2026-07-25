@@ -101,6 +101,23 @@ Product owns the tuning UI. This service exposes ingest + guardrails so ops can 
 
 Merge order at assess time: **default ← region (`city_code=""`) ← city**. Pass `region_code` / `city_code` on `/v1/assess`. Each result includes a `routing` object (`priority` / `queue`) for prioritized investigation queues.
 
+### Feedback tuning (F1 + supply-aware auto-apply)
+
+Labeled reviews (`POST /v1/feedback`) join to stored scores for per-head precision/recall/F1. Driver Ops / Platform S&D ingest a market **supply/demand forecast**; local ops ingest **enforcement hardgates** (hour/day/week). The tuner maps `supply_ratio` to a precision/recall operating point (peak → higher precision; surplus → higher recall), searches thresholds inside guardrails ∩ those bands ∩ volume caps, auto-applies city/region overlays when F1 lifts, and appends every decision to an audit log. Downstream still owns enforce/clawback.
+
+```bash
+# Ingest forecast + hardgates, then run metrics+tuner
+curl -X PUT localhost:8000/v1/supply/forecast -H 'content-type: application/json' \
+  -d '{"rows":[{"region_code":"PH","city_code":"MNL","period_start":"2026-07-25T00:00:00Z","period_end":"2026-07-26T00:00:00Z","forecast_supply":120,"forecast_demand":100,"source":"driver_ops"}]}'
+curl -X PUT localhost:8000/v1/enforcement/hardgates -H 'content-type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL","window":"hour","max_enforcements":50}'
+curl -X POST localhost:8000/v1/tuning/run -H 'content-type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL"}'
+curl 'localhost:8000/v1/audit/policy?limit=20'
+```
+
+CLIs: `python scripts/compute_label_metrics.py`, `python scripts/run_tuner.py --region-code PH --city-code MNL`.
+
 ```bash
 # Guardrails Product FE should enforce client-side (server re-validates)
 curl localhost:8000/v1/policy/guardrails
