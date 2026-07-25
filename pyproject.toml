@@ -1,0 +1,36 @@
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "offline-cancel-risk"
+version = "0.1.0"
+description = "Reusable async toolkit for cancelled-order offline, abuse, and theft risk scoring in logistics"
+readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.11"
+authors = [{ name = "Offline Cancel Risk Contributors" }]
+dependencies = [
+  "fastapi>=0.115.0",
+  "uvicorn[standard]>=0.32.0",
+  "pydantic>=2.9.0",
+  "pydantic-settings>=2.6.0",
+  "httpx>=0.27.0",
+  "numpy>=1.26.0",
+  "scikit-learn>=1.5.0",
+  "pandas>=2.2.0",
+  "pyyaml>=6.0.0",
+]
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0.0", "pytest-asyncio>=0.24.0", "build>=1.2.0"]
+
+[project.scripts]
+# Prefer `python -m examples.csv_demo` from a clone; optional thin wrappers can be added under offline_cancel_risk.cli later.
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+pythonpath = ["src", "."]

@@ -1,0 +1,49 @@
+dbscan:
+  min_pts: 7
+  confidence_threshold: 0.75
+  clustering_radius_m: 50
+  immediate_dp_radius: 150
+  standard_dp_radius: 400
+  extended_dp_radius: 800
+  standard_discount: 0.6
+  extended_discount: 0.2
+  drop_off_min_pts: 30
+  round_trip_gap_seconds: 3600
+dwell:
+  min_dwell_seconds: 120
+  max_speed_mps: 1.5
+sequence:
+  stop_match_radius_m: 150
+gps:
+  min_window_h: 3
+  max_window_h: 24
+  min_points: 20
+  max_gap_minutes: 45
+replacement:
+  max_place_delay_minutes: 180
+  route_similarity_min: 0.7
+theft:
+  high_value_amount: 500
+  food_categories: ["FOOD", "FOOD_DELIVERY"]
+abuse:
+  multi_cancel_window_minutes: 120
+  near_dest_radius_m: 400
+blend:
+  cancelled_offline: {rule_weight: 1.0, ml_weight: 0.0}
+  cancel_abuse: {rule_weight: 1.0, ml_weight: 0.0}
+  selective_theft: {rule_weight: 1.0, ml_weight: 0.0}
+thresholds:
+  cancelled_offline: 0.75
+  cancel_abuse: 0.75
+  selective_theft: 0.75
+ear:
+  recoverability:
+    cancelled_offline: 1.0
+    cancel_abuse: 0.4
+    selective_theft: 0.8
+  attention_weights:
+    cancelled_offline: 1.0
+    cancel_abuse: 0.7
+    selective_theft: 1.2
+feedback:
+  daily_review_quota: 50

@@ -1,0 +1,27 @@
+from functools import lru_cache
+from pathlib import Path
+import yaml
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+# settings.py lives at src/offline_cancel_risk/settings.py → repo root is parents[2]
+ROOT = Path(__file__).resolve().parents[2]
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(env_prefix="OCR_")
+    policy_path: str = str(ROOT / "config" / "policy.default.yaml")
+    sqlite_path: str = str(ROOT / "data" / "assessments.db")
+    stream_path: str = str(ROOT / "data" / "risk_events.jsonl")
+    gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
+    gps_api_key: str = ""
+    sync_assess: bool = False
+
+@lru_cache
+def get_settings() -> Settings:
+    return Settings()
+
+def load_policy(path: Path | str) -> dict:
+    with open(path, "r", encoding="utf-8") as f:
+        data = yaml.safe_load(f)
+    if not isinstance(data, dict):
+        raise ValueError("policy must be a mapping")
+    return data
