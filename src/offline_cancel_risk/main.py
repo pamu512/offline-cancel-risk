@@ -13,6 +13,8 @@ from offline_cancel_risk.control_plane.audit import PolicyAuditLog
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
+from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
@@ -55,6 +57,11 @@ def create_app(
     hardgate_store = EnforcementHardgateStore(cp_path)
     label_metrics_store = LabelMetricsStore(cp_path)
     operating_point_cfg = load_policy(settings.operating_point_path)
+    ticket_store = LabelTicketStore(
+        settings.label_tickets_path,
+        stream_path=settings.label_tickets_stream_path,
+    )
+    bias_hints = bias_hints_from_metrics(label_metrics_store.latest(limit=20))
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -80,6 +87,8 @@ def create_app(
                     shadow_metrics=metrics,
                     canary=canary_ctrl,
                     overlays=overlay_store,
+                    tickets=ticket_store,
+                    bias_hints=bias_hints,
                 )
             )
         try:
@@ -105,6 +114,7 @@ def create_app(
     app.state.hardgates = hardgate_store
     app.state.label_metrics = label_metrics_store
     app.state.operating_point_cfg = operating_point_cfg
+    app.state.tickets = ticket_store
     app.state.gates = gates
     app.state.queue = queue
     app.state.registry = reg

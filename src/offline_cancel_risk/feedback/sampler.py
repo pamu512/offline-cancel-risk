@@ -1,0 +1,309 @@
+"""Hybrid inline + batch label ticket sampler."""
+
+from __future__ import annotations
+
+import logging
+from typing import Any
+
+from offline_cancel_risk.api.schemas import AssessmentResult
+from offline_cancel_risk.feedback.tickets import LabelTicketStore, utc_day_key
+
+_LOG = logging.getLogger(__name__)
+_HEADS = ("cancelled_offline", "cancel_abuse", "selective_theft")
+
+_PRIORITY = {
+    "disagreement": 100,
+    "uncertainty": 80,
+    "bias_fp": 70,
+    "bias_fn": 70,
+    "coverage": 10,
+}
+
+
+def _feedback_cfg(policy: dict[str, Any]) -> dict[str, Any]:
+    return dict(policy.get("feedback") or {})
+
+
+def _thresholds(policy: dict[str, Any]) -> dict[str, float]:
+    return {k: float(v) for k, v in (policy.get("thresholds") or {}).items()}
+
+
+def score_band(score: float, thr: float, delta: float) -> str:
+    if score < thr - delta:
+        return "low"
+    if score > thr + delta:
+        return "high"
+    return "mid"
+
+
+def evaluate_inline_reason(
+    *,
+    scores: dict[str, float],
+    rule_scores: dict[str, float],
+    ml_scores: dict[str, float | None],
+    policy: dict[str, Any],
+    bias_hints: dict[str, str] | None = None,
+) -> tuple[str, list[str], dict[str, Any]] | None:
+    """Return (reason, heads, strata) or None if not a priority inline candidate."""
+    cfg = _feedback_cfg(policy)
+    delta = float(cfg.get("uncertainty_delta", 0.1))
+    thrs = _thresholds(policy)
+    bias_hints = bias_hints or {}
+
+    disagree_heads: list[str] = []
+    for head in _HEADS:
+        ml = ml_scores.get(head)
+        if ml is None:
+            continue
+        thr = float(thrs.get(head, 0.75))
+        rule_flag = float(rule_scores.get(head, 0.0)) >= thr
+        ml_flag = float(ml) >= thr
+        if rule_flag != ml_flag:
+            disagree_heads.append(head)
+    if disagree_heads:
+        return (
+            "disagreement",
+            disagree_heads,
+            {"heads": disagree_heads, "delta": delta},
+        )
+
+    uncertain_heads: list[str] = []
+    bands: dict[str, str] = {}
+    for head in _HEADS:
+        thr = float(thrs.get(head, 0.75))
+        score = float(scores.get(head, 0.0))
+        bands[head] = score_band(score, thr, delta)
+        if abs(score - thr) <= delta:
+            uncertain_heads.append(head)
+    if uncertain_heads:
+        return (
+            "uncertainty",
+            uncertain_heads,
+            {"heads": uncertain_heads, "bands": bands, "delta": delta},
+        )
+
+    for head, hint in bias_hints.items():
+        if hint in {"bias_fp", "bias_fn"} and head in _HEADS:
+            return (hint, [head], {"heads": [head], "source": "label_metrics"})
+
+    return None
+
+
+def bias_hints_from_metrics(
+    metrics_rows: list[dict[str, Any]],
+) -> dict[str, str]:
+    """Map head → bias_fp|bias_fn from latest metrics snapshots."""
+    by_head: dict[str, dict[str, Any]] = {}
+    for row in metrics_rows:
+        head = row.get("head")
+        if head in _HEADS and head not in by_head:
+            by_head[str(head)] = row
+    hints: dict[str, str] = {}
+    for head, row in by_head.items():
+        support = int(row.get("support") or 0)
+        if support < 5:
+            continue
+        precision = float(row.get("precision") or 0.0)
+        recall = float(row.get("recall") or 0.0)
+        if precision < 0.7 and float(row.get("fp") or 0) > 0:
+            hints[head] = "bias_fp"
+        elif recall < 0.5 and float(row.get("fn") or 0) > 0:
+            hints[head] = "bias_fn"
+    return hints
+
+
+def try_inline_sample(
+    store: LabelTicketStore,
+    result: AssessmentResult,
+    policy: dict[str, Any],
+    *,
+    bias_hints: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    cfg = _feedback_cfg(policy)
+    quota = int(cfg.get("daily_review_quota", 50))
+    soft = float(cfg.get("inline_soft_cap_fraction", 0.6))
+    day = utc_day_key()
+    if store.day_count(day) >= max(0, int(quota * soft)):
+        return None
+    if store.has_open_or_labeled_today(result.order_display_id, day):
+        return None
+    reason = evaluate_inline_reason(
+        scores=result.scores.model_dump(),
+        rule_scores=result.rule_scores.model_dump(),
+        ml_scores=result.ml_scores.model_dump(),
+        policy=policy,
+        bias_hints=bias_hints,
+    )
+    if reason is None:
+        return None
+    sampling_reason, heads, strata = reason
+    return store.create(
+        order_display_id=result.order_display_id,
+        region_code=result.region_code or "",
+        city_code=result.city_code or "",
+        heads=heads,
+        sampling_reason=sampling_reason,
+        strata=strata,
+        priority=_PRIORITY.get(sampling_reason, 10),
+        day_key=day,
+    )
+
+
+def run_batch_sample(
+    store: LabelTicketStore,
+    assessments: list[AssessmentResult],
+    policy: dict[str, Any],
+    *,
+    labeled_order_ids: set[str] | None = None,
+    bias_hints: dict[str, str] | None = None,
+    region_code: str = "",
+    city_code: str = "",
+) -> list[dict[str, Any]]:
+    cfg = _feedback_cfg(policy)
+    quota = int(cfg.get("daily_review_quota", 50))
+    per_min = int(cfg.get("per_head_min", 5))
+    per_max = int(cfg.get("per_head_max", 25))
+    day = utc_day_key()
+    labeled_order_ids = labeled_order_ids or set()
+    bias_hints = bias_hints or {}
+    region = (region_code or "").strip().upper()
+    city = (city_code or "").strip().upper()
+
+    created: list[dict[str, Any]] = []
+    remaining = quota - store.day_count(day)
+    if remaining <= 0:
+        return created
+    # allow quota+1 absolute ceiling
+    remaining = min(remaining, quota + 1 - store.day_count(day))
+    if remaining <= 0:
+        return created
+
+    head_counts = store.head_counts(day)
+
+    def _eligible() -> list[AssessmentResult]:
+        out: list[AssessmentResult] = []
+        for a in assessments:
+            if a.order_display_id in labeled_order_ids:
+                continue
+            if store.has_open_or_labeled_today(a.order_display_id, day):
+                continue
+            if region and (a.region_code or "").strip().upper() != region:
+                continue
+            if city and (a.city_code or "").strip().upper() != city:
+                continue
+            out.append(a)
+        return out
+
+    candidates = _eligible()
+
+    def _try_create(
+        a: AssessmentResult, reason: str, heads: list[str], strata: dict[str, Any]
+    ) -> bool:
+        nonlocal remaining
+        if remaining <= 0:
+            return False
+        for h in heads:
+            if head_counts.get(h, 0) >= per_max:
+                return False
+        ticket = store.create(
+            order_display_id=a.order_display_id,
+            region_code=a.region_code or "",
+            city_code=a.city_code or "",
+            heads=heads,
+            sampling_reason=reason,
+            strata=strata,
+            priority=_PRIORITY.get(reason, 10),
+            day_key=day,
+        )
+        if ticket is None:
+            return False
+        created.append(ticket)
+        remaining -= 1
+        for h in heads:
+            head_counts[h] = head_counts.get(h, 0) + 1
+        return True
+
+    # Pass 1: priority reasons (same as inline)
+    for a in list(candidates):
+        if remaining <= 0:
+            break
+        reason = evaluate_inline_reason(
+            scores=a.scores.model_dump(),
+            rule_scores=a.rule_scores.model_dump(),
+            ml_scores=a.ml_scores.model_dump(),
+            policy=policy,
+            bias_hints=bias_hints,
+        )
+        if reason is None:
+            continue
+        sampling_reason, heads, strata = reason
+        if _try_create(a, sampling_reason, heads, strata):
+            candidates.remove(a)
+
+    # Pass 2: coverage for heads under per_head_min
+    for head in _HEADS:
+        while head_counts.get(head, 0) < per_min and remaining > 0:
+            picked = None
+            delta = float(cfg.get("uncertainty_delta", 0.1))
+            # Prefer mid-band, else any remaining candidate
+            mid: list[AssessmentResult] = []
+            other: list[AssessmentResult] = []
+            for a in candidates:
+                thr = float(_thresholds(policy).get(head, 0.75))
+                score = float(getattr(a.scores, head))
+                if score_band(score, thr, delta) == "mid":
+                    mid.append(a)
+                else:
+                    other.append(a)
+            pool = mid or other
+            if not pool:
+                break
+            picked = pool[0]
+            if _try_create(
+                picked,
+                "coverage",
+                [head],
+                {"heads": [head], "band": "coverage"},
+            ):
+                candidates.remove(picked)
+            else:
+                break
+
+    # Pass 3: fill remainder with coverage on any under-max head
+    for a in list(candidates):
+        if remaining <= 0:
+            break
+        heads = [
+            h
+            for h in _HEADS
+            if head_counts.get(h, 0) < per_max
+        ]
+        if not heads:
+            break
+        # pick head with lowest count
+        heads.sort(key=lambda h: head_counts.get(h, 0))
+        head = heads[0]
+        if _try_create(
+            a, "coverage", [head], {"heads": [head], "band": "fill"}
+        ):
+            candidates.remove(a)
+
+    return created
+
+
+def safe_inline_sample(
+    store: LabelTicketStore | None,
+    result: AssessmentResult,
+    policy: dict[str, Any],
+    *,
+    bias_hints: dict[str, str] | None = None,
+) -> dict[str, Any] | None:
+    if store is None:
+        return None
+    try:
+        return try_inline_sample(store, result, policy, bias_hints=bias_hints)
+    except Exception:
+        _LOG.exception(
+            "Inline label sampling failed for order=%s", result.order_display_id
+        )
+        return None

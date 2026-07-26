@@ -21,6 +21,8 @@ class Settings(BaseSettings):
     shadow_metrics_path: str = str(ROOT / "data" / "shadow_metrics.db")
     canary_sqlite_path: str = str(ROOT / "data" / "canary.db")
     control_plane_sqlite_path: str = str(ROOT / "data" / "control_plane.db")
+    label_tickets_path: str = str(ROOT / "data" / "label_tickets.db")
+    label_tickets_stream_path: str = str(ROOT / "data" / "label_tickets.jsonl")
     operating_point_path: str = str(
         ROOT / "config" / "operating_point.default.yaml"
     )

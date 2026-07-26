@@ -101,6 +101,14 @@ Product owns the tuning UI. This service exposes ingest + guardrails so ops can 
 
 Merge order at assess time: **default ← region (`city_code=""`) ← city**. Pass `region_code` / `city_code` on `/v1/assess`. Each result includes a `routing` object (`priority` / `queue`) for prioritized investigation queues.
 
+### Feedback sampler (review quota)
+
+Hybrid label sampling for ML feedback (not a full investigator queue):
+
+- **Inline** on assess: uncertainty / rule↔ML disagreement / bias hotspots, up to `inline_soft_cap_fraction` of `daily_review_quota`
+- **Batch** fill: `POST /v1/feedback/sample` or `python scripts/sample_feedback_tickets.py` tops up per-head min/max mix
+- Tickets in SQLite + `data/label_tickets.jsonl`; `GET /v1/feedback/tickets`; `POST /v1/feedback` closes open tickets
+
 ### Feedback tuning (F1 + supply-aware auto-apply)
 
 Labeled reviews (`POST /v1/feedback`) join to stored scores for per-head precision/recall/F1. Driver Ops / Platform S&D ingest a market **supply/demand forecast**; local ops ingest **enforcement hardgates** (hour/day/week). The tuner maps `supply_ratio` to a precision/recall operating point (peak → higher precision; surplus → higher recall), searches thresholds inside guardrails ∩ those bands ∩ volume caps, auto-applies city/region overlays when F1 lifts, and appends every decision to an audit log. Downstream still owns enforce/clawback.

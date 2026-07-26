@@ -12,6 +12,7 @@ from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.pipeline.assess import assess_order
+from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
 
@@ -54,6 +55,8 @@ class AssessJobQueue:
         shadow_metrics: ShadowMetricsStore | None = None,
         canary: CanaryController | None = None,
         overlays: PolicyOverlayStore | None = None,
+        tickets: LabelTicketStore | None = None,
+        bias_hints: dict[str, str] | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -68,6 +71,8 @@ class AssessJobQueue:
                 shadow_metrics=shadow_metrics,
                 canary=canary,
                 overlays=overlays,
+                tickets=tickets,
+                bias_hints=bias_hints,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -86,6 +91,8 @@ class AssessJobQueue:
         shadow_metrics: ShadowMetricsStore | None = None,
         canary: CanaryController | None = None,
         overlays: PolicyOverlayStore | None = None,
+        tickets: LabelTicketStore | None = None,
+        bias_hints: dict[str, str] | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -100,6 +107,8 @@ class AssessJobQueue:
                     shadow_metrics=shadow_metrics,
                     canary=canary,
                     overlays=overlays,
+                    tickets=tickets,
+                    bias_hints=bias_hints,
                 )
             finally:
                 self._queue.task_done()

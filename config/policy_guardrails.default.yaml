@@ -39,6 +39,10 @@ bounds:
   ear.attention_weights.cancel_abuse: {min: 0.0, max: 3.0}
   ear.attention_weights.selective_theft: {min: 0.0, max: 3.0}
   feedback.daily_review_quota: {min: 0, max: 5000}
+  feedback.inline_soft_cap_fraction: {min: 0.0, max: 1.0}
+  feedback.per_head_min: {min: 0, max: 500}
+  feedback.per_head_max: {min: 0, max: 2000}
+  feedback.uncertainty_delta: {min: 0.01, max: 0.5}
   routing.p1_attention_min: {min: 0.0, max: 100000}
   routing.p2_attention_min: {min: 0.0, max: 100000}
 

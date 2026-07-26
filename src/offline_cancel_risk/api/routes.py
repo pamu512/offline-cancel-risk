@@ -8,6 +8,10 @@ from pydantic import BaseModel, Field
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.control_plane.metrics import compute_label_metrics
 from offline_cancel_risk.control_plane.tuner import TunerContext, run_tuner
+from offline_cancel_risk.feedback.sampler import (
+    bias_hints_from_metrics,
+    run_batch_sample,
+)
 from offline_cancel_risk.policy.resolve import GuardrailError
 from offline_cancel_risk.policy.service import (
     resolved_policy_for_market,
@@ -87,6 +91,12 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             shadow_metrics=getattr(request.app.state, "shadow_metrics", None),
             canary=getattr(request.app.state, "canary", None),
             overlays=getattr(request.app.state, "overlays", None),
+            tickets=getattr(request.app.state, "tickets", None),
+            bias_hints=bias_hints_from_metrics(
+                request.app.state.label_metrics.latest(limit=20)
+            )
+            if getattr(request.app.state, "label_metrics", None) is not None
+            else None,
         )
     else:
         queue.schedule(job_id)
@@ -142,9 +152,61 @@ async def get_generations(
 
 
 @router.post("/feedback")
-async def feedback_upsert(body: FeedbackRequest, request: Request) -> dict[str, bool]:
+async def feedback_upsert(body: FeedbackRequest, request: Request) -> dict[str, Any]:
     request.app.state.table.upsert_feedback(body.order_display_id, body.labels)
-    return {"ok": True}
+    closed = 0
+    tickets = getattr(request.app.state, "tickets", None)
+    if tickets is not None:
+        closed = tickets.mark_labeled(body.order_display_id)
+    return {"ok": True, "tickets_closed": closed}
+
+
+class SampleFeedbackRequest(BaseModel):
+    region_code: str = ""
+    city_code: str = ""
+    lookback_limit: int = 500
+
+
+@router.get("/feedback/tickets")
+async def list_feedback_tickets(
+    request: Request,
+    status: str | None = None,
+    day_key: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    return request.app.state.tickets.list_tickets(
+        status=status, day_key=day_key, limit=limit
+    )
+
+
+@router.post("/feedback/sample")
+async def sample_feedback_tickets(
+    body: SampleFeedbackRequest, request: Request
+) -> dict[str, Any]:
+    _require_auth(request)
+    table = request.app.state.table
+    labeled = {f["order_display_id"] for f in table.list_feedback()}
+    assessments = table.list_latest_assessments()
+    if body.lookback_limit > 0:
+        assessments = assessments[: int(body.lookback_limit)]
+    hints = bias_hints_from_metrics(
+        request.app.state.label_metrics.latest(limit=50)
+    )
+    created = run_batch_sample(
+        request.app.state.tickets,
+        assessments,
+        request.app.state.policy,
+        labeled_order_ids=labeled,
+        bias_hints=hints,
+        region_code=body.region_code,
+        city_code=body.city_code,
+    )
+    return {
+        "created": len(created),
+        "ticket_ids": [t["ticket_id"] for t in created],
+        "day_count": request.app.state.tickets.day_count(),
+    }
 
 
 class SideloadRequest(BaseModel):

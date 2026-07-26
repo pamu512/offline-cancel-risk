@@ -48,6 +48,10 @@ ear:
     selective_theft: 1.2
 feedback:
   daily_review_quota: 50
+  inline_soft_cap_fraction: 0.6
+  per_head_min: 5
+  per_head_max: 25
+  uncertainty_delta: 0.1
 routing:
   # Prioritized review routing from attention_score + flags (downstream may use queue).
   p1_attention_min: 200

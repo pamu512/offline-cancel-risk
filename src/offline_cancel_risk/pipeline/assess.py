@@ -31,6 +31,8 @@ from offline_cancel_risk.pipeline.window import resolve_gps_window
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.feedback.sampler import safe_inline_sample
+from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 from offline_cancel_risk.policy.routing import build_routing
 from offline_cancel_risk.policy.service import resolved_policy_for_market
@@ -101,6 +103,8 @@ async def assess_order(
     shadow_metrics: ShadowMetricsStore | None = None,
     canary: CanaryController | None = None,
     overlays: PolicyOverlayStore | None = None,
+    tickets: LabelTicketStore | None = None,
+    bias_hints: dict[str, str] | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
         policy = resolved_policy_for_market(
@@ -418,4 +422,5 @@ async def assess_order(
             "idempotent cache still protects recomputation",
             req.order_display_id,
         )
+    safe_inline_sample(tickets, result, policy, bias_hints=bias_hints)
     return result
