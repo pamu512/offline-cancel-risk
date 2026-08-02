@@ -1,157 +1,81 @@
 # offline-cancel-risk
 
-## Elevator pitch
-
 When a logistics order is cancelled, money can still walk out the door: the trip may have been completed off-platform, cancel/reassign games may be gaming the marketplace, or food/high-value goods may have gone missing. **offline-cancel-risk** turns cancelled-order + GPS evidence into three independent, ops-tunable risk scores—so downstream systems can stop revenue leakage without a human reviewing every cancel.
 
-It is an installable, Apache-2.0 toolkit (not a locked-in vendor product): plug in your GPS and order feeds, or try the zero-network CSV demo in minutes.
+Apache-2.0 toolkit: plug in your GPS and order feeds, or try the zero-network CSV demo in minutes.
+
+## How it works
+
+```
+cancel / batch assess
+        │
+        ▼
+ GPS window (3h→24h) → features (DBSCAN, dwell, sequence, replacement, abuse, theft)
+        │
+        ▼
+ rule_scores + ml_scores → blend → soft scores → policy thresholds → flags
+        │
+        ▼
+ EAR / attention_score + routing (P1/P2/P3) → stream + table
+        │
+        ├── feedback sampler → label tickets (quota)
+        ├── labels → F1 metrics → supply-aware tuner → market overlays
+        └── models: champion / shadow / canary
+```
+
+**Three independent heads** (soft score + 0/1 flag each):
+
+| Head | Meaning |
+|---|---|
+| `cancelled_offline` | Trip likely completed off-platform (revenue leakage) |
+| `cancel_abuse` | Cancel / reassign games |
+| `selective_theft` | Food / high-value + next-driver “no order” |
+
+This service is a **feature producer**. Downstream owns payout blocks, suspensions, and clawback execution. Product owns the ops tuning UI; this repo exposes ingest APIs and auto-tune within guardrails.
+
+**Full ops manual:** [docs/OPS.md](docs/OPS.md) — tuning, day-to-day use, maintenance, API reference, env vars.
 
 ## Who it’s for
 
-| Audience | Why you’d use it |
+| Audience | Why |
 |---|---|
-| **Ops / logistics managers** | Product FE tunes thresholds/weights per `region_code` / `city_code` within risk guardrails (this service ingests overlays); prioritize review by expected revenue at risk |
-| **Fraud / risk investigators** | Get explainable reason codes and evidence packs for the rare disputes that still need a human |
-| **Data / platform engineers** | Drop in as an async microservice or library job; consume scores from a stream + table |
-| **Any logistics / delivery team** | Clone or `pip install`, bring CSV or adapters—no proprietary stack required |
+| Ops / logistics | Per-market thresholds within guardrails; prioritize by $ at risk |
+| Investigators | Reason codes + evidence for rare disputes |
+| Platform / data eng | Async API or library job; stream + table consumers |
+| Any delivery team | Clone / pip install; CSV demo needs no network |
 
-**Not for:** realtime cancel-path blocking, payout/suspension enforcement (downstream owns actions), or replacing your LBS GPS platform.
+**Not for:** realtime cancel-path blocking, owning LBS GPS, or running enforcement inside this service.
 
-## What it scores
-
-Independent soft scores + policy flags:
-
-1. **Cancelled offline** — trip likely completed off-platform (revenue leakage)
-2. **Cancel abuse** — cancel / reassign games (order stays active, chains, cancel near destination, …)
-3. **Selective theft** — food / high-value + next-driver “no order” signals
-
-## Quickstart (no API keys)
+## Quickstart
 
 ```bash
+python -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 pytest -q
 python -m examples.csv_demo
 ```
 
-## Install (development)
-
-From a clone of this repository:
+Optional API (sync mode for local demos):
 
 ```bash
-python -m venv .venv
-source .venv/bin/activate
-pip install -e ".[dev]"
+OCR_SYNC_ASSESS=1 uvicorn offline_cancel_risk.main:app --reload
+curl localhost:8000/v1/health
 ```
 
-## Tests
-
-```bash
-pytest
-```
-
-Focused example:
-
-```bash
-pytest tests/test_settings_policy.py -v
-```
-
-## CSV demo
-
-Offline end-to-end on synthetic sample CSVs (`CsvOrdersClient` + `CsvGpsClient`):
-
-```bash
-python -m examples.csv_demo
-```
-
-See [examples/csv_demo/README.md](examples/csv_demo/README.md).
-
-Labeled metrics smoke:
+Labeled backtest smoke:
 
 ```bash
 python scripts/backtest.py
 ```
 
-## Optional HTTP API
+## Docs map
 
-```bash
-OCR_SYNC_ASSESS=1 uvicorn offline_cancel_risk.main:app --reload
-```
-
-Configure tenant GPS and paths via `OCR_*` environment variables; default policy lives at `config/policy.default.yaml`.
-
-### Model sideload / shadow / canary
-
-Bundle layout: `model.json` (`format`: `joblib`|`onnx`) + artifact + `feature_schema.json` + `metrics_baseline.json`.
-
-```bash
-# Sideload a challenger (shadow by default)
-curl -X POST localhost:8000/v1/models \
-  -H 'content-type: application/json' \
-  -d '{"bundle_path":"/path/to/bundle","role":"shadow"}'
-
-# Evaluate promote gates (auto-starts canary when ready; defaults 5% / 24h)
-curl -X POST localhost:8000/v1/models/{id}/evaluate
-```
-
-Serving flags use the champion (or canary cohort when active). Shadow scores are recorded on each assess without changing flags outside the canary.
-
-### Market policy overlays (ops ingest)
-
-Product owns the tuning UI. This service exposes ingest + guardrails so ops can set almost all model/policy numerics per **region** and **city**, clamped by `config/policy_guardrails.default.yaml`.
-
-Merge order at assess time: **default ← region (`city_code=""`) ← city**. Pass `region_code` / `city_code` on `/v1/assess`. Each result includes a `routing` object (`priority` / `queue`) for prioritized investigation queues.
-
-### Feedback sampler (review quota)
-
-Hybrid label sampling for ML feedback (not a full investigator queue):
-
-- **Inline** on assess: uncertainty / rule↔ML disagreement / bias hotspots, up to `inline_soft_cap_fraction` of `daily_review_quota`
-- **Batch** fill: `POST /v1/feedback/sample` or `python scripts/sample_feedback_tickets.py` tops up per-head min/max mix
-- Tickets in SQLite + `data/label_tickets.jsonl`; `GET /v1/feedback/tickets`; `POST /v1/feedback` closes open tickets
-
-### Feedback tuning (F1 + supply-aware auto-apply)
-
-Labeled reviews (`POST /v1/feedback`) join to stored scores for per-head precision/recall/F1. Driver Ops / Platform S&D ingest a market **supply/demand forecast**; local ops ingest **enforcement hardgates** (hour/day/week). The tuner maps `supply_ratio` to a precision/recall operating point (peak → higher precision; surplus → higher recall), searches thresholds inside guardrails ∩ those bands ∩ volume caps, auto-applies city/region overlays when F1 lifts, and appends every decision to an audit log. Downstream still owns enforce/clawback.
-
-```bash
-# Ingest forecast + hardgates, then run metrics+tuner
-curl -X PUT localhost:8000/v1/supply/forecast -H 'content-type: application/json' \
-  -d '{"rows":[{"region_code":"PH","city_code":"MNL","period_start":"2026-07-25T00:00:00Z","period_end":"2026-07-26T00:00:00Z","forecast_supply":120,"forecast_demand":100,"source":"driver_ops"}]}'
-curl -X PUT localhost:8000/v1/enforcement/hardgates -H 'content-type: application/json' \
-  -d '{"region_code":"PH","city_code":"MNL","window":"hour","max_enforcements":50}'
-curl -X POST localhost:8000/v1/tuning/run -H 'content-type: application/json' \
-  -d '{"region_code":"PH","city_code":"MNL"}'
-curl 'localhost:8000/v1/audit/policy?limit=20'
-```
-
-CLIs: `python scripts/compute_label_metrics.py`, `python scripts/run_tuner.py --region-code PH --city-code MNL`.
-
-Ops reliability: `POST /v1/feedback` debounces a metrics+tune cycle (`OCR_METRICS_DEBOUNCE_SECONDS`, default 30). Optional periodic tick (`OCR_CONTROL_PLANE_TICK_SECONDS`, default 0=off) re-samples tickets and retunes active markets. Active clawback halves enforcement hardgates for the TTL.
-
-Smarter tuner: searches thresholds (+ offline blend weights / routing `p1_attention_min`) on a train split and requires **holdout F1** lift before auto-apply.
-
-Detection: `sequence.offline_weight` tilts cancelled-offline rules; `force_reassess=true` on `/v1/assess` bumps `assessment_generation` and marks priors provisional; cross-order driver cancel chains feed abuse scoring.
-
-```bash
-# Guardrails Product FE should enforce client-side (server re-validates)
-curl localhost:8000/v1/policy/guardrails
-
-# Ingest city overlay (rejects values outside guardrails with 400)
-curl -X PUT localhost:8000/v1/policy/overlays \
-  -H 'content-type: application/json' \
-  -d '{
-    "region_code":"PH",
-    "city_code":"MNL",
-    "overlay":{
-      "thresholds":{"cancelled_offline":0.82},
-      "dbscan":{"confidence_threshold":0.8},
-      "routing":{"p1_attention_min":150}
-    }
-  }'
-
-# Resolved policy for a market
-curl 'localhost:8000/v1/policy/resolved?region_code=PH&city_code=MNL'
-```
+| Doc | Contents |
+|---|---|
+| [docs/OPS.md](docs/OPS.md) | **Tuning, use, maintenance manual** |
+| [examples/csv_demo/README.md](examples/csv_demo/README.md) | Offline CSV demo |
+| [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup / PRs |
+| `docs/superpowers/specs/` | Design specs |
 
 ## License
 
