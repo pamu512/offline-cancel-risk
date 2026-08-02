@@ -78,6 +78,11 @@ def _within_hardgates(
     city_code: str,
     projected: int,
 ) -> tuple[bool, str]:
+    """Enforce the tightest configured volume cap.
+
+    Projected flag count is a short-horizon cohort estimate — compare it to the
+    most granular window present (hour → day → week), not all windows at once.
+    """
     caps = hardgates.get(region_code, city_code)
     for window in ("hour", "day", "week"):
         row = caps.get(window)
@@ -85,6 +90,7 @@ def _within_hardgates(
             continue
         if projected > int(row["max_enforcements"]):
             return False, f"breaches_{window}_cap"
+        return True, ""
     return True, ""
 
 

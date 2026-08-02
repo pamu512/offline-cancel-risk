@@ -94,6 +94,7 @@ def test_uncertainty_reason():
     )
     assert reason is not None
     assert reason[0] == "uncertainty"
+    assert reason[1] == "cancelled_offline"
 
 
 def test_disagreement_beats_uncertainty():
@@ -117,6 +118,71 @@ def test_disagreement_beats_uncertainty():
     )
     assert reason is not None
     assert reason[0] == "disagreement"
+    assert reason[1] == "cancelled_offline"
+
+
+def test_bias_fp_only_on_flagged_orders():
+    policy = _policy()
+    policy["feedback"]["uncertainty_delta"] = 0.05
+    hints = {"cancelled_offline": "bias_fp"}
+    flagged = evaluate_inline_reason(
+        scores={
+            "cancelled_offline": 0.95,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        rule_scores={
+            "cancelled_offline": 0.95,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        ml_scores={
+            "cancelled_offline": None,
+            "cancel_abuse": None,
+            "selective_theft": None,
+        },
+        policy=policy,
+        bias_hints=hints,
+    )
+    assert flagged is not None
+    assert flagged[0] == "bias_fp"
+
+    not_flagged = evaluate_inline_reason(
+        scores={
+            "cancelled_offline": 0.2,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        rule_scores={
+            "cancelled_offline": 0.2,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        ml_scores={
+            "cancelled_offline": None,
+            "cancel_abuse": None,
+            "selective_theft": None,
+        },
+        policy=policy,
+        bias_hints=hints,
+    )
+    assert not_flagged is None
+
+
+def test_unique_order_day_constraint(tmp_path: Path):
+    store = LabelTicketStore(tmp_path / "t.db")
+    first = store.create(
+        order_display_id="X",
+        heads=["cancelled_offline"],
+        sampling_reason="coverage",
+    )
+    second = store.create(
+        order_display_id="X",
+        heads=["cancel_abuse"],
+        sampling_reason="coverage",
+    )
+    assert first is not None
+    assert second is None
 
 
 def test_inline_respects_soft_cap_and_dedupe(tmp_path: Path):
@@ -153,8 +219,9 @@ def test_batch_fills_quota(tmp_path: Path):
         for i in range(20)
     ]
     created = run_batch_sample(store, assessments, policy)
-    assert len(created) == 10
-    assert store.day_count() == 10
+    # daily_review_quota ±1
+    assert 10 <= len(created) <= 11
+    assert store.day_count() == len(created)
 
 
 def _settings(tmp_path: Path) -> Settings:

@@ -12,6 +12,8 @@ from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.pipeline.assess import assess_order
+from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
@@ -57,9 +59,14 @@ class AssessJobQueue:
         overlays: PolicyOverlayStore | None = None,
         tickets: LabelTicketStore | None = None,
         bias_hints: dict[str, str] | None = None,
+        label_metrics: LabelMetricsStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
+        # Refresh bias hints per job so worker doesn't freeze startup metrics.
+        hints = bias_hints
+        if label_metrics is not None:
+            hints = bias_hints_from_metrics(label_metrics.latest(limit=50))
         try:
             job.result = await assess_order(
                 job.request,
@@ -72,7 +79,7 @@ class AssessJobQueue:
                 canary=canary,
                 overlays=overlays,
                 tickets=tickets,
-                bias_hints=bias_hints,
+                bias_hints=hints,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -93,6 +100,7 @@ class AssessJobQueue:
         overlays: PolicyOverlayStore | None = None,
         tickets: LabelTicketStore | None = None,
         bias_hints: dict[str, str] | None = None,
+        label_metrics: LabelMetricsStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -109,6 +117,7 @@ class AssessJobQueue:
                     overlays=overlays,
                     tickets=tickets,
                     bias_hints=bias_hints,
+                    label_metrics=label_metrics,
                 )
             finally:
                 self._queue.task_done()

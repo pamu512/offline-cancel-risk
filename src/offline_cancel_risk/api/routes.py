@@ -92,11 +92,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             canary=getattr(request.app.state, "canary", None),
             overlays=getattr(request.app.state, "overlays", None),
             tickets=getattr(request.app.state, "tickets", None),
-            bias_hints=bias_hints_from_metrics(
-                request.app.state.label_metrics.latest(limit=20)
-            )
-            if getattr(request.app.state, "label_metrics", None) is not None
-            else None,
+            label_metrics=getattr(request.app.state, "label_metrics", None),
         )
     else:
         queue.schedule(job_id)

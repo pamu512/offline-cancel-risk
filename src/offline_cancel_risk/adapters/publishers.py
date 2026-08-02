@@ -198,6 +198,7 @@ class SqliteTablePublisher:
                   SELECT MAX(b.assessment_generation) FROM assessments b
                   WHERE b.order_display_id = a.order_display_id
                 )
+                ORDER BY assessed_at DESC
                 """
             ).fetchall()
         return [AssessmentResult.model_validate_json(r[0]) for r in rows]

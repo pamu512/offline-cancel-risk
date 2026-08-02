@@ -59,6 +59,13 @@ class LabelTicketStore:
                 ON label_tickets(day_key, status)
                 """
             )
+            # At most one ticket per order per UTC day (open or labeled).
+            conn.execute(
+                """
+                CREATE UNIQUE INDEX IF NOT EXISTS uq_tickets_order_day
+                ON label_tickets(order_display_id, day_key)
+                """
+            )
             conn.commit()
 
     def day_count(self, day_key: str | None = None) -> int:
@@ -94,7 +101,7 @@ class LabelTicketStore:
                     counts[head] += 1
         return counts
 
-    def has_open_or_labeled_today(
+    def has_ticket_today(
         self, order_display_id: str, day_key: str | None = None
     ) -> bool:
         day = day_key or utc_day_key()
@@ -103,12 +110,17 @@ class LabelTicketStore:
                 """
                 SELECT 1 FROM label_tickets
                 WHERE order_display_id=? AND day_key=?
-                  AND status IN ('open', 'labeled')
                 LIMIT 1
                 """,
                 (order_display_id, day),
             ).fetchone()
         return row is not None
+
+    # Back-compat alias used by older call sites / tests
+    def has_open_or_labeled_today(
+        self, order_display_id: str, day_key: str | None = None
+    ) -> bool:
+        return self.has_ticket_today(order_display_id, day_key)
 
     def create(
         self,
@@ -123,7 +135,7 @@ class LabelTicketStore:
         day_key: str | None = None,
     ) -> dict[str, Any] | None:
         day = day_key or utc_day_key()
-        if self.has_open_or_labeled_today(order_display_id, day):
+        if not heads:
             return None
         ticket_id = uuid4().hex
         created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -141,30 +153,34 @@ class LabelTicketStore:
             "created_at": created,
             "labeled_at": None,
         }
-        with self._connect() as conn:
-            conn.execute(
-                """
-                INSERT INTO label_tickets(
-                  ticket_id, order_display_id, region_code, city_code,
-                  heads_json, sampling_reason, strata_json, priority,
-                  status, day_key, created_at, labeled_at
-                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
-                """,
-                (
-                    ticket_id,
-                    order_display_id,
-                    payload["region_code"],
-                    payload["city_code"],
-                    json.dumps(payload["heads"]),
-                    sampling_reason,
-                    json.dumps(payload["strata"]),
-                    int(priority),
-                    "open",
-                    day,
-                    created,
-                ),
-            )
-            conn.commit()
+        try:
+            with self._connect() as conn:
+                conn.execute(
+                    """
+                    INSERT INTO label_tickets(
+                      ticket_id, order_display_id, region_code, city_code,
+                      heads_json, sampling_reason, strata_json, priority,
+                      status, day_key, created_at, labeled_at
+                    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, NULL)
+                    """,
+                    (
+                        ticket_id,
+                        order_display_id,
+                        payload["region_code"],
+                        payload["city_code"],
+                        json.dumps(payload["heads"]),
+                        sampling_reason,
+                        json.dumps(payload["strata"]),
+                        int(priority),
+                        "open",
+                        day,
+                        created,
+                    ),
+                )
+                conn.commit()
+        except sqlite3.IntegrityError:
+            # Race: another worker inserted the same order/day.
+            return None
         if self._stream is not None:
             with self._stream.open("a", encoding="utf-8") as f:
                 f.write(json.dumps(payload, separators=(",", ":")))

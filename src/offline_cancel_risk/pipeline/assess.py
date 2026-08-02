@@ -133,6 +133,8 @@ async def assess_order(
     )
     cached = lookup_cached(table, key)
     if cached is not None:
+        # Idempotent assess still participates in daily label quota.
+        safe_inline_sample(tickets, cached, policy, bias_hints=bias_hints)
         return cached
 
     gps_policy = policy["gps"]
