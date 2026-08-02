@@ -83,7 +83,7 @@ def _within_hardgates(
     Projected flag count is a short-horizon cohort estimate — compare it to the
     most granular window present (hour → day → week), not all windows at once.
     """
-    caps = hardgates.get(region_code, city_code)
+    caps = hardgates.effective_caps(region_code, city_code)
     for window in ("hour", "day", "week"):
         row = caps.get(window)
         if row is None:

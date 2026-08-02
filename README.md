@@ -126,6 +126,8 @@ curl 'localhost:8000/v1/audit/policy?limit=20'
 
 CLIs: `python scripts/compute_label_metrics.py`, `python scripts/run_tuner.py --region-code PH --city-code MNL`.
 
+Ops reliability: `POST /v1/feedback` debounces a metrics+tune cycle (`OCR_METRICS_DEBOUNCE_SECONDS`, default 30). Optional periodic tick (`OCR_CONTROL_PLANE_TICK_SECONDS`, default 0=off) re-samples tickets and retunes active markets. Active clawback halves enforcement hardgates for the TTL.
+
 ```bash
 # Guardrails Product FE should enforce client-side (server re-validates)
 curl localhost:8000/v1/policy/guardrails

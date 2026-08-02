@@ -12,6 +12,7 @@ from offline_cancel_risk.api.routes import router
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
+from offline_cancel_risk.control_plane.loop import ControlPlaneLoop
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
@@ -70,6 +71,23 @@ def create_app(
         thresholds={k: float(v) for k, v in policy["thresholds"].items()},
     )
     queue = AssessJobQueue()
+    control_loop = ControlPlaneLoop(
+        debounce_seconds=settings.metrics_debounce_seconds,
+        tick_seconds=settings.control_plane_tick_seconds,
+        run_kwargs={
+            "settings": settings,
+            "policy": policy,
+            "guardrails": guardrails,
+            "overlays": overlay_store,
+            "audit": audit_log,
+            "forecast": forecast_store,
+            "hardgates": hardgate_store,
+            "label_metrics": label_metrics_store,
+            "op_cfg": operating_point_cfg,
+        },
+        table=table_pub,
+        tickets=ticket_store,
+    )
 
     @asynccontextmanager
     async def lifespan(app: FastAPI) -> AsyncIterator[None]:
@@ -89,9 +107,11 @@ def create_app(
                     label_metrics=label_metrics_store,
                 )
             )
+        control_loop.start()
         try:
             yield
         finally:
+            await control_loop.stop()
             if worker_task is not None:
                 worker_task.cancel()
                 try:
@@ -113,6 +133,7 @@ def create_app(
     app.state.label_metrics = label_metrics_store
     app.state.operating_point_cfg = operating_point_cfg
     app.state.tickets = ticket_store
+    app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue
     app.state.registry = reg

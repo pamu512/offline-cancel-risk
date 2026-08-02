@@ -29,6 +29,9 @@ class Settings(BaseSettings):
     tuner_min_labeled: int = 30
     tuner_cooldown_minutes: int = 60
     tuner_min_f1_lift: float = 0.01
+    metrics_debounce_seconds: float = 30.0
+    # 0 disables periodic control-plane tick (metrics/tune/sample)
+    control_plane_tick_seconds: float = 0.0
     gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
     gps_api_key: str = ""
     sync_assess: bool = False

@@ -161,3 +161,23 @@ class EnforcementHardgateStore:
         if row is None:
             return False
         return _parse_ts(str(row["until_ts"])) > at
+
+    def effective_caps(
+        self,
+        region_code: str,
+        city_code: str,
+        *,
+        clawback_scale: float = 0.5,
+    ) -> dict[str, dict[str, Any]]:
+        """Return hardgates, halved while clawback TTL is active."""
+        caps = self.get(region_code, city_code)
+        if not self.clawback_active(region_code, city_code):
+            return caps
+        scale = max(0.0, min(1.0, float(clawback_scale)))
+        out: dict[str, dict[str, Any]] = {}
+        for window, row in caps.items():
+            item = dict(row)
+            item["max_enforcements"] = int(int(item["max_enforcements"]) * scale)
+            item["clawback_scaled"] = True
+            out[window] = item
+        return out

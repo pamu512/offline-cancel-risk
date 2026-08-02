@@ -6,8 +6,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
-from offline_cancel_risk.control_plane.metrics import compute_label_metrics
-from offline_cancel_risk.control_plane.tuner import TunerContext, run_tuner
+from offline_cancel_risk.control_plane.cycle import run_metrics_and_tune
 from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
     run_batch_sample,
@@ -154,6 +153,9 @@ async def feedback_upsert(body: FeedbackRequest, request: Request) -> dict[str, 
     tickets = getattr(request.app.state, "tickets", None)
     if tickets is not None:
         closed = tickets.mark_labeled(body.order_display_id)
+    loop = getattr(request.app.state, "control_loop", None)
+    if loop is not None:
+        loop.notify_feedback(body.order_display_id)
     return {"ok": True, "tickets_closed": closed}
 
 
@@ -517,61 +519,21 @@ async def get_label_metrics(
 @router.post("/tuning/run")
 async def run_tuning(body: TuningRunRequest, request: Request) -> dict[str, Any]:
     _require_auth(request)
-    settings = request.app.state.settings
-    table = request.app.state.table
-    feedback = table.list_feedback()
-    assessments = []
-    for result in table.list_latest_assessments():
-        assessments.append(
-            {
-                "order_display_id": result.order_display_id,
-                "region_code": result.region_code,
-                "city_code": result.city_code,
-                "scores": result.scores.model_dump(),
-            }
-        )
-    resolved = resolved_policy_for_market(
-        request.app.state.policy,
-        request.app.state.overlays,
-        region_code=body.region_code,
-        city_code=body.city_code or None,
-    )
-    snapshots = compute_label_metrics(
-        assessments,
-        feedback,
-        thresholds={k: float(v) for k, v in (resolved.get("thresholds") or {}).items()},
+    return run_metrics_and_tune(
+        settings=request.app.state.settings,
+        policy=request.app.state.policy,
+        guardrails=request.app.state.guardrails,
+        overlays=request.app.state.overlays,
+        audit=request.app.state.audit,
+        forecast=request.app.state.forecast,
+        hardgates=request.app.state.hardgates,
+        label_metrics=request.app.state.label_metrics,
+        op_cfg=request.app.state.operating_point_cfg,
+        table=request.app.state.table,
         region_code=body.region_code,
         city_code=body.city_code,
-    )
-    request.app.state.label_metrics.save_snapshots(snapshots)
-    request.app.state.audit.append(
-        actor="tuner",
-        action="metrics_snapshot",
-        region_code=body.region_code,
-        city_code=body.city_code,
-        after={"heads": [s["head"] for s in snapshots]},
-        decision="recorded",
         reason="tuning_run",
     )
-    decisions = run_tuner(
-        TunerContext(
-            base_policy=request.app.state.policy,
-            guardrails=request.app.state.guardrails,
-            overlays=request.app.state.overlays,
-            audit=request.app.state.audit,
-            forecast=request.app.state.forecast,
-            hardgates=request.app.state.hardgates,
-            op_cfg=request.app.state.operating_point_cfg,
-            assessments=assessments,
-            feedback=feedback,
-            region_code=body.region_code,
-            city_code=body.city_code,
-            min_labeled=settings.tuner_min_labeled,
-            cooldown_minutes=settings.tuner_cooldown_minutes,
-            min_f1_lift=settings.tuner_min_f1_lift,
-        )
-    )
-    return {"metrics": snapshots, "decisions": decisions}
 
 
 @router.get("/tuning/suggestions")
