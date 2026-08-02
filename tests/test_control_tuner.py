@@ -104,6 +104,7 @@ def test_tuner_rejects_when_no_candidate_in_peak_precision_gate(tmp_path: Path):
         "no_candidate_in_gates",
         "insufficient_labels",
         "f1_lift_below_min",
+        "holdout_f1_lift_below_min",
     }
 
 

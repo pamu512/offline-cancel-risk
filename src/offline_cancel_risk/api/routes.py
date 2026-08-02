@@ -92,6 +92,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             overlays=getattr(request.app.state, "overlays", None),
             tickets=getattr(request.app.state, "tickets", None),
             label_metrics=getattr(request.app.state, "label_metrics", None),
+            driver_chains=getattr(request.app.state, "driver_chains", None),
         )
     else:
         queue.schedule(job_id)

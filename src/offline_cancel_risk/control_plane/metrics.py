@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import hashlib
 import json
 import sqlite3
 from datetime import datetime, timezone
@@ -9,6 +10,7 @@ from pathlib import Path
 from typing import Any
 from uuid import uuid4
 
+from offline_cancel_risk.scoring.blend import blend_scores
 from offline_cancel_risk.scoring.policy import apply_thresholds
 
 _HEADS = ("cancelled_offline", "cancel_abuse", "selective_theft")
@@ -18,6 +20,45 @@ def _safe_div(num: float, den: float) -> float:
     return float(num) / float(den) if den else 0.0
 
 
+def holdout_split(
+    feedback: list[dict[str, Any]],
+    *,
+    holdout_fraction: float = 0.3,
+) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Deterministic train/holdout split by order_display_id hash."""
+    frac = max(0.0, min(0.9, float(holdout_fraction)))
+    train: list[dict[str, Any]] = []
+    holdout: list[dict[str, Any]] = []
+    for fb in feedback:
+        digest = hashlib.sha256(
+            str(fb.get("order_display_id", "")).encode("utf-8")
+        ).hexdigest()
+        bucket = int(digest[:8], 16) / 0xFFFFFFFF
+        if bucket < frac:
+            holdout.append(fb)
+        else:
+            train.append(fb)
+    if not train and holdout:
+        # Tiny sets: keep everything in train so search can run.
+        return holdout, []
+    return train, holdout
+
+
+def resolve_scores(
+    assess: dict[str, Any],
+    *,
+    blend: dict[str, Any] | None,
+) -> dict[str, float]:
+    if blend is not None and assess.get("rule_scores") is not None:
+        rule = {h: float((assess.get("rule_scores") or {}).get(h, 0.0)) for h in _HEADS}
+        ml_raw = assess.get("ml_scores") or {}
+        ml = {
+            h: (None if ml_raw.get(h) is None else float(ml_raw[h])) for h in _HEADS
+        }
+        return blend_scores(rule, ml, {"blend": blend})
+    return {h: float((assess.get("scores") or {}).get(h, 0.0)) for h in _HEADS}
+
+
 def compute_label_metrics(
     assessments: list[dict[str, Any]],
     feedback: list[dict[str, Any]],
@@ -25,6 +66,7 @@ def compute_label_metrics(
     thresholds: dict[str, float],
     region_code: str = "",
     city_code: str = "",
+    blend: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
     region = (region_code or "").strip().upper()
     city = (city_code or "").strip().upper()
@@ -52,9 +94,7 @@ def compute_label_metrics(
             if head not in labels:
                 continue
             y = int(labels[head])
-            scores = {
-                h: float((assess.get("scores") or {}).get(h, 0.0)) for h in _HEADS
-            }
+            scores = resolve_scores(assess, blend=blend)
             flags = apply_thresholds(scores, policy)
             yhat = int(flags.get(head, 0))
             labeled += 1

@@ -14,6 +14,7 @@ from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
 from offline_cancel_risk.control_plane.loop import ControlPlaneLoop
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
@@ -61,6 +62,7 @@ def create_app(
         settings.label_tickets_path,
         stream_path=settings.label_tickets_stream_path,
     )
+    chain_store = DriverChainStore(settings.driver_chains_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -105,6 +107,7 @@ def create_app(
                     overlays=overlay_store,
                     tickets=ticket_store,
                     label_metrics=label_metrics_store,
+                    driver_chains=chain_store,
                 )
             )
         control_loop.start()
@@ -133,6 +136,7 @@ def create_app(
     app.state.label_metrics = label_metrics_store
     app.state.operating_point_cfg = operating_point_cfg
     app.state.tickets = ticket_store
+    app.state.driver_chains = chain_store
     app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue

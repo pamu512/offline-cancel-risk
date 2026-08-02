@@ -23,6 +23,8 @@ class AssessRequest(BaseModel):
     device_id: str | None = None
     city_code: str | None = None
     region_code: str | None = None
+    # When true: bump assessment_generation and mark prior generations provisional.
+    force_reassess: bool = False
 
 
 class ThreeHeadScores(BaseModel):

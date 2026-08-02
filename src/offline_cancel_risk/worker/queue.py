@@ -11,10 +11,11 @@ from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
-from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
+from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
 
@@ -60,6 +61,7 @@ class AssessJobQueue:
         tickets: LabelTicketStore | None = None,
         bias_hints: dict[str, str] | None = None,
         label_metrics: LabelMetricsStore | None = None,
+        driver_chains: DriverChainStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -80,6 +82,7 @@ class AssessJobQueue:
                 overlays=overlays,
                 tickets=tickets,
                 bias_hints=hints,
+                driver_chains=driver_chains,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -101,6 +104,7 @@ class AssessJobQueue:
         tickets: LabelTicketStore | None = None,
         bias_hints: dict[str, str] | None = None,
         label_metrics: LabelMetricsStore | None = None,
+        driver_chains: DriverChainStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -118,6 +122,7 @@ class AssessJobQueue:
                     tickets=tickets,
                     bias_hints=bias_hints,
                     label_metrics=label_metrics,
+                    driver_chains=driver_chains,
                 )
             finally:
                 self._queue.task_done()

@@ -31,6 +31,7 @@ from offline_cancel_risk.pipeline.window import resolve_gps_window
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.feedback.sampler import safe_inline_sample
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
@@ -105,6 +106,7 @@ async def assess_order(
     overlays: PolicyOverlayStore | None = None,
     tickets: LabelTicketStore | None = None,
     bias_hints: dict[str, str] | None = None,
+    driver_chains: DriverChainStore | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
         policy = resolved_policy_for_market(
@@ -113,6 +115,10 @@ async def assess_order(
             region_code=req.region_code,
             city_code=req.city_code,
         )
+    if req.force_reassess:
+        next_gen = getattr(table, "next_generation", None)
+        if callable(next_gen):
+            generation = int(next_gen(req.order_display_id))
     phash = policy_hash(policy)
     # Resolve serving model id up front for idempotency key stability.
     champion_rec = registry.get_champion() if registry is not None else None
@@ -221,12 +227,22 @@ async def assess_order(
     for event in req.reassign_cancel_events:
         if "driver_id" in event:
             driver_ids.add(int(event["driver_id"]))
+    chain_lookback = int(policy.get("abuse", {}).get("chain_lookback_minutes", 120))
+    cross_order_chain = 0
+    if driver_chains is not None:
+        cross_order_chain = driver_chains.count_recent(
+            req.driver_id,
+            as_of=req.cancel_ts,
+            window_minutes=chain_lookback,
+            exclude_order_id=req.order_display_id,
+        )
+    driver_chain_count = max(len(driver_ids), cross_order_chain + 1)
 
     abuse_score, abuse_reasons = abuse_feature_score(
         {
             "order_still_active": _order_still_active(req.order_status),
             "cancel_event_count": len(req.reassign_cancel_events) + 1,
-            "driver_chain_count": len(driver_ids),
+            "driver_chain_count": driver_chain_count,
             "cancel_near_destination": near_dest,
         },
         policy["abuse"],
@@ -415,7 +431,23 @@ async def assess_order(
     )
 
     # Dual-write: table first so idempotent cache survives stream failures.
+    if req.force_reassess:
+        mark = getattr(table, "mark_prior_provisional", None)
+        if callable(mark):
+            mark(req.order_display_id, before_generation=generation)
     table.upsert(result)
+    if driver_chains is not None:
+        try:
+            driver_chains.record_from_assess(
+                driver_id=req.driver_id,
+                order_display_id=req.order_display_id,
+                cancel_ts=req.cancel_ts,
+                reassign_cancel_events=list(req.reassign_cancel_events),
+            )
+        except Exception:
+            _LOG.exception(
+                "Driver chain record failed for order=%s", req.order_display_id
+            )
     try:
         stream.publish(result)
     except Exception:

@@ -14,6 +14,8 @@ dwell:
   max_speed_mps: 1.5
 sequence:
   stop_match_radius_m: 150
+  # Weight of sequence_score in cancelled_offline rule blend (vs stop/dwell).
+  offline_weight: 1.5
 gps:
   min_window_h: 3
   max_window_h: 24
@@ -28,6 +30,8 @@ theft:
 abuse:
   multi_cancel_window_minutes: 120
   near_dest_radius_m: 400
+  # Cross-order cancel/reassign chain lookback for driver_chain_count.
+  chain_lookback_minutes: 120
 blend:
   # When ml_scores are null, blend falls back to rules only.
   cancelled_offline: {rule_weight: 0.6, ml_weight: 0.4}

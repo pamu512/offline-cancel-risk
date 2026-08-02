@@ -9,7 +9,6 @@ def compute_rule_scores(
     features: dict[str, Any],
     policy: dict[str, Any],
 ) -> tuple[dict[str, float], list[str]]:
-    del policy  # ponytail: MVP rule formula is fixed; policy reserved for later knobs
     final_stop = float(features.get("final_stop_confidence", 0.0))
     sequence = float(features.get("sequence_score", 0.0))
     dwell = float(features.get("dwell_fraction", 0.0))
@@ -18,7 +17,10 @@ def compute_rule_scores(
     abuse_score = float(features.get("abuse_score", 0.0))
     theft_score = float(features.get("theft_score", 0.0))
 
-    base = (final_stop + sequence + dwell) / 3.0
+    seq_w = float(policy.get("sequence", {}).get("offline_weight", 1.0))
+    seq_w = max(0.0, seq_w)
+    denom = 2.0 + seq_w
+    base = (final_stop + sequence * seq_w + dwell) / denom if denom else 0.0
     if not has_replacement:
         base = max(base, base * 0.5 + 0.35)
     if has_replacement and not replacement_valid:

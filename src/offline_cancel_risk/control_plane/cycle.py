@@ -25,6 +25,9 @@ def assessments_as_dicts(table: SqliteTablePublisher) -> list[dict[str, Any]]:
             "region_code": r.region_code,
             "city_code": r.city_code,
             "scores": r.scores.model_dump(),
+            "rule_scores": r.rule_scores.model_dump(),
+            "ml_scores": r.ml_scores.model_dump(),
+            "attention_score": float(r.attention_score),
         }
         for r in table.list_latest_assessments()
     ]

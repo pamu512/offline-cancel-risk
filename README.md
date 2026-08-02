@@ -128,6 +128,10 @@ CLIs: `python scripts/compute_label_metrics.py`, `python scripts/run_tuner.py --
 
 Ops reliability: `POST /v1/feedback` debounces a metrics+tune cycle (`OCR_METRICS_DEBOUNCE_SECONDS`, default 30). Optional periodic tick (`OCR_CONTROL_PLANE_TICK_SECONDS`, default 0=off) re-samples tickets and retunes active markets. Active clawback halves enforcement hardgates for the TTL.
 
+Smarter tuner: searches thresholds (+ offline blend weights / routing `p1_attention_min`) on a train split and requires **holdout F1** lift before auto-apply.
+
+Detection: `sequence.offline_weight` tilts cancelled-offline rules; `force_reassess=true` on `/v1/assess` bumps `assessment_generation` and marks priors provisional; cross-order driver cancel chains feed abuse scoring.
+
 ```bash
 # Guardrails Product FE should enforce client-side (server re-validates)
 curl localhost:8000/v1/policy/guardrails

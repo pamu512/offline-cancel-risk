@@ -23,6 +23,7 @@ class Settings(BaseSettings):
     control_plane_sqlite_path: str = str(ROOT / "data" / "control_plane.db")
     label_tickets_path: str = str(ROOT / "data" / "label_tickets.db")
     label_tickets_stream_path: str = str(ROOT / "data" / "label_tickets.jsonl")
+    driver_chains_path: str = str(ROOT / "data" / "driver_chains.db")
     operating_point_path: str = str(
         ROOT / "config" / "operating_point.default.yaml"
     )

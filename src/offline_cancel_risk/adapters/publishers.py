@@ -145,6 +145,27 @@ class SqliteTablePublisher:
             return None
         return AssessmentResult.model_validate_json(row[0])
 
+    def next_generation(self, order_display_id: str) -> int:
+        latest = self.latest(order_display_id)
+        if latest is None:
+            return 1
+        return int(latest.assessment_generation) + 1
+
+    def mark_prior_provisional(
+        self, order_display_id: str, *, before_generation: int
+    ) -> int:
+        """Flip provisional=true on generations strictly below before_generation."""
+        updated = 0
+        for result in self.list_generations(order_display_id):
+            if result.assessment_generation >= before_generation:
+                continue
+            if result.provisional:
+                continue
+            patched = result.model_copy(update={"provisional": True})
+            self.upsert(patched)
+            updated += 1
+        return updated
+
     def list_generations(self, order_display_id: str) -> list[AssessmentResult]:
         with self._connect() as conn:
             rows = conn.execute(
