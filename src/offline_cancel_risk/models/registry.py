@@ -61,9 +61,10 @@ class ModelRegistry:
         src = Path(bundle_path)
         handle = load_bundle(src)
         dest = self._models_root / handle.model_id
-        if dest.exists():
-            shutil.rmtree(dest)
-        shutil.copytree(src, dest)
+        if src.resolve() != dest.resolve():
+            if dest.exists():
+                shutil.rmtree(dest)
+            shutil.copytree(src, dest)
         # Re-load from dest so checksum/paths are canonical
         handle = load_bundle(dest)
         created = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")

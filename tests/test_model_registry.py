@@ -62,6 +62,17 @@ def test_sideload_defaults_to_shadow(tmp_path: Path):
     assert len(reg.list_shadow()) == 1
 
 
+def test_sideload_in_place_under_models_root(tmp_path: Path):
+    models_root = tmp_path / "models"
+    reg = ModelRegistry(tmp_path / "reg.db", models_root)
+    bundle = _bundle(models_root, "in_place")
+    rec = reg.sideload(bundle, role="shadow")
+    assert rec.model_id == "in_place"
+    assert rec.bundle_path == str(bundle.resolve())
+    assert bundle.exists()
+    assert (bundle / "model.json").exists()
+
+
 def test_only_one_champion(tmp_path: Path):
     reg = ModelRegistry(tmp_path / "reg.db", tmp_path / "models")
     a = reg.sideload(_bundle(tmp_path, "a"), role="champion")
