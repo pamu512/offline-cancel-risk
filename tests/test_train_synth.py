@@ -78,3 +78,26 @@ def test_build_scenario_shapes():
             assert len(row.points) < 5
         else:
             assert len(row.points) >= 10
+
+
+from offline_cancel_risk.train.labels import flip_labels, teacher_labels_from_flags
+
+
+def test_teacher_labels_from_flags():
+    assert teacher_labels_from_flags({"cancelled_offline": 1, "cancel_abuse": 0, "selective_theft": 1}) == {
+        "cancelled_offline": 1,
+        "cancel_abuse": 0,
+        "selective_theft": 1,
+    }
+
+
+def test_flip_labels_rate():
+    rng = np.random.default_rng(0)
+    base = {"cancelled_offline": 0, "cancel_abuse": 0, "selective_theft": 0}
+    flips = 0
+    n = 5000
+    for _ in range(n):
+        out = flip_labels(base, rng, flip_rate=0.1)
+        flips += sum(1 for k in base if out[k] != base[k])
+    rate = flips / (n * 3)
+    assert 0.07 < rate < 0.13
