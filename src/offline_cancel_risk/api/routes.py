@@ -331,10 +331,12 @@ async def get_outcome_recoverability(
     store = getattr(request.app.state, "outcomes", None)
     if store is None:
         raise HTTPException(status_code=503, detail="outcomes unavailable")
+    region = region_code.strip().upper()
+    city = city_code.strip().upper()
     return {
-        "region_code": region_code.strip().upper(),
-        "city_code": city_code.strip().upper(),
-        "heads": store.get_recoverability(region_code, city_code),
+        "region_code": region,
+        "city_code": city,
+        "heads": store.get_recoverability(region, city),
     }
 
 

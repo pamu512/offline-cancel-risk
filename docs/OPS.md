@@ -82,6 +82,7 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_DEVICE_GRAPH_PATH` | `data/device_graph.db` | Device↔driver/user graph edges |
 | `OCR_CHAT_SIGNALS_PATH` | `data/chat_signals.db` | Force-cancel / chat persuasion flags |
 | `OCR_ENTITY_ANOMALY_PATH` | `data/entity_anomaly.db` | Peer/self feature anomaly samples |
+| `OCR_OUTCOMES_PATH` | `data/outcomes.db` | Downstream outcome events + per-market recoverability EWMA |
 | `OCR_DATABASE_URL` | _(empty)_ | Postgres URL for assessments/feedback (`pip install -e ".[pg]"`); empty → SQLite |
 | `OCR_MODELS_*` | under `data/` | Registry, shadow metrics, canary |
 | `OCR_TUNER_MIN_LABELED` | `30` | Min labels before auto-apply |
@@ -189,6 +190,45 @@ curl -X POST localhost:8000/v1/enforcement/clawback \
   -H 'content-type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL","ttl_minutes":60,"reason":"supply_dip"}'
 ```
+
+### 3.5 Outcome → EAR recoverability (Downstream)
+
+When Downstream resolves an enforcement action, post the outcome so per-market recoverability EWMA can learn from clawback/payout results. Persisted at `OCR_OUTCOMES_PATH` (default `data/outcomes.db`).
+
+**Outcome types** (`outcome` field):
+
+| Value | EWMA signal | Meaning |
+|---|---|---|
+| `clawback_won` | 1.0 | Recovered funds / successful clawback |
+| `payout_blocked` | 1.0 | Payout blocked before loss |
+| `account_actioned` | 1.0 | Account action taken (suspension, etc.) |
+| `clawback_lost` | 0.0 | Clawback failed or write-off |
+
+`head`, `region_code`, and `city_code` default from the latest assessment when omitted. Idempotent on `(order_display_id, outcome, occurred_at)`.
+
+```bash
+curl -X POST localhost:8000/v1/outcomes \
+  -H 'content-type: application/json' \
+  -d '{
+    "order_display_id":"ORD-123",
+    "outcome":"clawback_won",
+    "occurred_at":"2026-08-03T12:00:00Z"
+  }'
+# → {"ok":true,"head":"selective_theft","region_code":"PH","city_code":"MNL",
+#    "recoverability":{...},"n_updates":1}
+
+curl 'localhost:8000/v1/outcomes/recoverability?region_code=PH&city_code=MNL'
+curl 'localhost:8000/v1/outcomes?order_display_id=ORD-123&limit=100'
+```
+
+**Shadow vs apply** (`policy.ear.mode`, default `shadow`):
+
+- **Shadow** — live `expected_revenue_at_risk` / `attention_score` use static policy recoverability (unchanged golden scores). Assessments include `ear_meta` with learned weights for monitoring.
+- **Apply** — after `min_updates_apply` (default 5) EWMA updates per head, live EAR uses learned recoverability; cold heads still fall back to static defaults.
+
+Knobs: `policy.ear.outcome_ewma_alpha` (default `0.05`), `policy.ear.min_updates_apply`. Auth required when `OCR_AUTH_REQUIRED=1` or `OCR_PROFILE=prod`.
+
+See [outcome-ear-loop design](superpowers/specs/2026-08-03-outcome-ear-loop-design.md).
 
 ---
 
@@ -357,6 +397,7 @@ Config under `policy.feedback` + `policy.learning` (feedback numerics also guard
 | `data/device_graph.db` | Device↔account graph edges |
 | `data/chat_signals.db` | Force-cancel / chat flags |
 | `data/entity_anomaly.db` | Entity anomaly feature samples |
+| `data/outcomes.db` | Downstream outcomes + recoverability EWMA |
 | `data/models.db` + `data/models/` | Model registry / artifacts |
 | `data/*.jsonl` | Streams (risk events, label tickets) |
 
@@ -444,6 +485,9 @@ OCR_PROFILE=prod OCR_API_KEYS=... OCR_QUEUE_BACKEND=sqlite \
 | PUT/GET | `/v1/supply/forecast` | S&D forecast |
 | PUT/GET | `/v1/enforcement/hardgates` | Volume caps |
 | POST | `/v1/enforcement/clawback` | Clawback signal |
+| POST | `/v1/outcomes` | Ingest Downstream enforcement outcome; EWMA recoverability |
+| GET | `/v1/outcomes/recoverability` | Per-market learned recoverability by head |
+| GET | `/v1/outcomes` | List recent outcome events (ops debug) |
 | POST | `/v1/marketplace/events` | Accept/complete/cancel funnel for marketplace metrics |
 | GET | `/v1/devices/{device_id}` | Device integrity EWMA / last flags |
 | POST | `/v1/device-graph/edges` | Device↔driver/user identity edges |
@@ -472,6 +516,7 @@ Assess + control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1` or `OCR
 - [specs/2026-08-03-learning-objective-design.md](superpowers/specs/2026-08-03-learning-objective-design.md)  
 - [specs/2026-08-03-entity-baseline-gate-design.md](superpowers/specs/2026-08-03-entity-baseline-gate-design.md)  
 - [specs/2026-08-03-platform-abuse-patterns-design.md](superpowers/specs/2026-08-03-platform-abuse-patterns-design.md)  
+- [specs/2026-08-03-outcome-ear-loop-design.md](superpowers/specs/2026-08-03-outcome-ear-loop-design.md)  
 
 
 
