@@ -243,6 +243,8 @@ async def test_outcomes_api_ingest_and_recoverability(tmp_path: Path):
                 "order_display_id": order_id,
                 "outcome": "clawback_won",
                 "occurred_at": "2024-01-02T00:00:00Z",
+                "region_code": "ph",
+                "city_code": "mnl",
             },
         )
         assert ingest.status_code == 200
@@ -252,6 +254,7 @@ async def test_outcomes_api_ingest_and_recoverability(tmp_path: Path):
         assert body["region_code"] == "PH"
         assert body["city_code"] == "MNL"
         assert body["n_updates"] == 1
+        assert (await ac.get("/v1/outcomes/recoverability", params={"region_code": "PH", "city_code": "MNL"})).json()["heads"]["selective_theft"]["n_updates"] == 1
 
         rec = await ac.get(
             "/v1/outcomes/recoverability",

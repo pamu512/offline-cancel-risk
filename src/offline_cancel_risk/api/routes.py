@@ -304,6 +304,9 @@ async def ingest_outcome(
         if city is None:
             city = latest.city_code or ""
 
+    region = region.strip().upper()
+    city = city.strip().upper()
+
     try:
         return store.record_outcome(
             order_display_id=body.order_display_id,
