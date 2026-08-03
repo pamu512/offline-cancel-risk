@@ -58,9 +58,13 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 
 | Variable | Default (conceptually) | Purpose |
 |---|---|---|
+| `OCR_PROFILE` | `demo` | `prod` forces auth on and requires `OCR_API_KEYS` at startup |
 | `OCR_SYNC_ASSESS` | `false` | `true` = assess in request path (dev) |
-| `OCR_AUTH_REQUIRED` | `false` | Require API key / bearer on control routes |
+| `OCR_AUTH_REQUIRED` | `false` | Require API key / bearer on assess + control routes (`true` under `OCR_PROFILE=prod`) |
 | `OCR_API_KEYS` | empty | Comma-separated keys when auth on |
+| `OCR_QUEUE_BACKEND` | `memory` | `sqlite` = durable multi-process assess job queue |
+| `OCR_ASSESS_QUEUE_PATH` | `data/assess_queue.db` | SQLite path when `OCR_QUEUE_BACKEND=sqlite` |
+| `OCR_CONTROL_PLANE_LOCK_PATH` | _(sibling of control-plane db)_ | File flock so only one replica runs control-plane ticks |
 | `OCR_GPS_BASE_URL` / `OCR_GPS_API_KEY` | empty | HTTP GPS adapter; empty → fake/empty GPS |
 | `OCR_POLICY_PATH` | `config/policy.default.yaml` | Base policy |
 | `OCR_POLICY_GUARDRAILS_PATH` | `config/policy_guardrails.default.yaml` | Overlay bounds |
@@ -78,6 +82,7 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_DEVICE_GRAPH_PATH` | `data/device_graph.db` | Device↔driver/user graph edges |
 | `OCR_CHAT_SIGNALS_PATH` | `data/chat_signals.db` | Force-cancel / chat persuasion flags |
 | `OCR_ENTITY_ANOMALY_PATH` | `data/entity_anomaly.db` | Peer/self feature anomaly samples |
+| `OCR_DATABASE_URL` | _(empty)_ | Postgres URL for assessments/feedback (`pip install -e ".[pg]"`); empty → SQLite |
 | `OCR_MODELS_*` | under `data/` | Registry, shadow metrics, canary |
 | `OCR_TUNER_MIN_LABELED` | `30` | Min labels before auto-apply |
 | `OCR_TUNER_COOLDOWN_MINUTES` | `60` | Min gap between applies per head/market |
@@ -86,6 +91,17 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_CONTROL_PLANE_TICK_SECONDS` | `0` | Periodic sample+tune (`0` = off) |
 
 Persist `data/` (or your mounted volume) across deploys.
+
+### Synthetic model train (overnight)
+
+Phase A then B (~500k full assess each):
+
+```bash
+python scripts/train_synth.py --phase a --n 500000 --outdir data/train/phase_a --seed 7
+python scripts/train_synth.py --phase b --n 500000 --outdir data/train/phase_b --seed 11 --flip-rate 0.05 --sideload-shadow
+```
+
+Resume with `--start-shard N` or re-run same `--outdir` (manifest `n_done`).
 
 ---
 
@@ -348,6 +364,7 @@ Treat audit + overlays as **compliance-sensitive**.
 
 | Cadence | Action |
 |---|---|
+| PR / CI | `pytest` + `python scripts/eval_holdout.py --check-floors` (floors in `docs/evals/`) |
 | Continuous | Assess consumer / API |
 | Daily | `POST /v1/feedback/sample` (or enable control-plane tick) |
 | Daily / after labels | Confirm metrics + audit; investigate reject spikes |
@@ -395,7 +412,16 @@ python scripts/backtest.py
 
 ### 6.6 Multi-replica note
 
-Debounce / tick loops are **in-process**. Multiple API replicas will each run their own loop. For multi-replica prod, run a single “control” worker for tick/debounce or move scheduling to an external cron calling `/v1/tuning/run` and `/v1/feedback/sample`.
+Control-plane ticks/debounced flushes take a **file flock** on `OCR_CONTROL_PLANE_LOCK_PATH` (default: sibling of the control-plane SQLite). Share that path (and `data/`) across replicas so only one leader tunes/samples.
+
+For assess workers across processes, set `OCR_QUEUE_BACKEND=sqlite` and share `OCR_ASSESS_QUEUE_PATH`. In-memory queue remains the demo default.
+
+Prod bootstrap:
+
+```bash
+OCR_PROFILE=prod OCR_API_KEYS=... OCR_QUEUE_BACKEND=sqlite \
+  uvicorn offline_cancel_risk.main:app --host 0.0.0.0 --port 8000
+```
 
 ---
 
@@ -431,7 +457,7 @@ Debounce / tick loops are **in-process**. Multiple API replicas will each run th
 | GET | `/v1/audit/policy` | Audit trail |
 | GET/POST | `/v1/models…` | Sideload, evaluate, canary, promote |
 
-Control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1`.
+Assess + control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1` or `OCR_PROFILE=prod`. Health stays open.
 
 ---
 
