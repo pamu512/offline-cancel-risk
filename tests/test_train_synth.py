@@ -156,3 +156,36 @@ def test_shard_round_trip(tmp_path: Path):
     assert y2.shape == (n, 3)
     np.testing.assert_array_equal(X2, X)
     np.testing.assert_array_equal(y2, y)
+
+
+@pytest.mark.asyncio
+async def test_generate_shard_phase_a(tmp_path: Path):
+    from offline_cancel_risk.train.dataset import generate_shard
+
+    outdir = tmp_path / "phase_a"
+    result = await generate_shard(
+        phase="a",
+        n=5,
+        start_index=0,
+        seed=42,
+        weights=DEFAULT_WEIGHTS,
+        flip_rate=0.0,
+        policy=load_policy("config/policy.default.yaml"),
+        outdir=outdir,
+        shard_idx=0,
+    )
+    assert result["n"] == 5
+    path = Path(result["path"])
+    assert path.exists()
+    assert path.name == "shard_00000.npz"
+    assert result["seconds"] >= 0
+
+    manifest = read_manifest(outdir)
+    assert manifest["n_done"] == 5
+    assert manifest["shards"] == [path.name]
+
+    with np.load(path) as data:
+        assert data["X"].shape == (5, 5)
+        assert data["y"].shape == (5, 3)
+        assert list(data["feature_names"]) == list(FEATURE_KEYS)
+        assert list(data["head_names"]) == list(HEADS)
