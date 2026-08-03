@@ -56,6 +56,10 @@ def resolve_scores(
             h: (None if ml_raw.get(h) is None else float(ml_raw[h])) for h in _HEADS
         }
         return blend_scores(rule, ml, {"blend": blend})
+    # Prefer pre-discount raw scores for learning joins.
+    raw = assess.get("scores_raw")
+    if isinstance(raw, dict) and raw:
+        return {h: float(raw.get(h, 0.0)) for h in _HEADS}
     return {h: float((assess.get("scores") or {}).get(h, 0.0)) for h in _HEADS}
 
 
@@ -67,7 +71,11 @@ def compute_label_metrics(
     region_code: str = "",
     city_code: str = "",
     blend: dict[str, Any] | None = None,
+    pattern_policy: dict[str, Any] | None = None,
 ) -> list[dict[str, Any]]:
+    """Per-head P/R/F1. When pattern_policy is set, restrict pairs to pattern cohort S."""
+    from offline_cancel_risk.control_plane.patterns import in_pattern_cohort
+
     region = (region_code or "").strip().upper()
     city = (city_code or "").strip().upper()
     by_id = {a["order_display_id"]: a for a in assessments}
@@ -84,7 +92,7 @@ def compute_label_metrics(
                 continue
         pairs.append((assess, fb))
 
-    policy = {"thresholds": thresholds}
+    thr_policy = {"thresholds": thresholds}
     out: list[dict[str, Any]] = []
     for head in _HEADS:
         tp = fp = fn = tn = 0
@@ -93,9 +101,13 @@ def compute_label_metrics(
             labels = fb.get("labels") or {}
             if head not in labels:
                 continue
+            if pattern_policy is not None and not in_pattern_cohort(
+                assess, head, pattern_policy
+            ):
+                continue
             y = int(labels[head])
             scores = resolve_scores(assess, blend=blend)
-            flags = apply_thresholds(scores, policy)
+            flags = apply_thresholds(scores, thr_policy)
             yhat = int(flags.get(head, 0))
             labeled += 1
             if y == 1 and yhat == 1:
@@ -109,22 +121,23 @@ def compute_label_metrics(
         precision = _safe_div(tp, tp + fp)
         recall = _safe_div(tp, tp + fn)
         f1 = _safe_div(2 * precision * recall, precision + recall)
-        out.append(
-            {
-                "region_code": region,
-                "city_code": city,
-                "head": head,
-                "tp": tp,
-                "fp": fp,
-                "fn": fn,
-                "tn": tn,
-                "precision": precision,
-                "recall": recall,
-                "f1": f1,
-                "support": labeled,
-                "flag_rate": _safe_div(tp + fp, labeled),
-            }
-        )
+        row: dict[str, Any] = {
+            "region_code": region,
+            "city_code": city,
+            "head": head,
+            "tp": tp,
+            "fp": fp,
+            "fn": fn,
+            "tn": tn,
+            "precision": precision,
+            "recall": recall,
+            "f1": f1,
+            "support": labeled,
+            "flag_rate": _safe_div(tp + fp, labeled),
+        }
+        if pattern_policy is not None:
+            row["cohort"] = "pattern"
+        out.append(row)
     return out
 
 

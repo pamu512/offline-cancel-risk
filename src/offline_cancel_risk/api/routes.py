@@ -93,6 +93,8 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             tickets=getattr(request.app.state, "tickets", None),
             label_metrics=getattr(request.app.state, "label_metrics", None),
             driver_chains=getattr(request.app.state, "driver_chains", None),
+            baselines=getattr(request.app.state, "baselines", None),
+            cancel_stats=getattr(request.app.state, "cancel_stats", None),
         )
     else:
         queue.schedule(job_id)
@@ -502,6 +504,46 @@ async def post_clawback(body: ClawbackRequest, request: Request) -> dict[str, An
         reason=body.reason,
     )
     return state
+
+
+@router.get("/baselines")
+async def list_baselines(
+    request: Request,
+    entity_kind: str = "",
+    driver_id: int | None = None,
+    user_id: int | None = None,
+    head: str = "",
+    discount_active: bool | None = None,
+    updated_since: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    store = getattr(request.app.state, "baselines", None)
+    if store is None:
+        return []
+    return store.query(
+        entity_kind=entity_kind,
+        driver_id=driver_id,
+        user_id=user_id,
+        head=head,
+        discount_active=discount_active,
+        updated_since=updated_since,
+        limit=limit,
+    )
+
+
+@router.get("/baselines/{entity_key:path}")
+async def get_baseline_entity(
+    entity_key: str, request: Request
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    store = getattr(request.app.state, "baselines", None)
+    if store is None:
+        raise HTTPException(status_code=404, detail="baselines unavailable")
+    rows = store.list_entity(entity_key)
+    if not rows:
+        raise HTTPException(status_code=404, detail="entity not found")
+    return rows
 
 
 @router.get("/metrics/labels")

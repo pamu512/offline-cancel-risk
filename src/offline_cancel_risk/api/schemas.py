@@ -23,6 +23,8 @@ class AssessRequest(BaseModel):
     device_id: str | None = None
     city_code: str | None = None
     region_code: str | None = None
+    # Optional Downstream device-intel ingest (spoof/root/risk_score).
+    device_risk: dict[str, bool | float | str] | None = None
     # When true: bump assessment_generation and mark prior generations provisional.
     force_reassess: bool = False
 
@@ -77,3 +79,8 @@ class AssessmentResult(BaseModel):
     city_code: str | None = None
     region_code: str | None = None
     routing: dict[str, str | float] = Field(default_factory=dict)
+    # Pre-baseline-discount blended scores (learning / warehouse joins).
+    scores_raw: ThreeHeadScores | None = None
+    baseline_meta: dict[str, dict[str, object]] = Field(default_factory=dict)
+    cancel_stage: str | None = None
+    evidence: list[dict[str, object]] = Field(default_factory=list)

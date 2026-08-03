@@ -121,18 +121,44 @@ def test_disagreement_beats_uncertainty():
     assert reason[1] == "cancelled_offline"
 
 
-def test_bias_fp_only_on_flagged_orders():
+def test_pattern_mass_beats_uncertainty():
     policy = _policy()
-    policy["feedback"]["uncertainty_delta"] = 0.05
-    hints = {"cancelled_offline": "bias_fp"}
-    flagged = evaluate_inline_reason(
+    reason = evaluate_inline_reason(
         scores={
-            "cancelled_offline": 0.95,
+            "cancelled_offline": 0.9,
             "cancel_abuse": 0.1,
             "selective_theft": 0.1,
         },
         rule_scores={
-            "cancelled_offline": 0.95,
+            "cancelled_offline": 0.9,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        ml_scores={
+            "cancelled_offline": None,
+            "cancel_abuse": None,
+            "selective_theft": None,
+        },
+        policy=policy,
+    )
+    assert reason is not None
+    assert reason[0] == "pattern_mass"
+    assert reason[1] == "cancelled_offline"
+
+
+def test_bias_fp_only_on_flagged_orders():
+    policy = _policy()
+    policy["feedback"]["uncertainty_delta"] = 0.05
+    # Below pattern score_min (0.85) so bias is not shadowed by pattern_mass.
+    hints = {"cancelled_offline": "bias_fp"}
+    flagged = evaluate_inline_reason(
+        scores={
+            "cancelled_offline": 0.80,
+            "cancel_abuse": 0.1,
+            "selective_theft": 0.1,
+        },
+        rule_scores={
+            "cancelled_offline": 0.80,
             "cancel_abuse": 0.1,
             "selective_theft": 0.1,
         },
@@ -167,6 +193,49 @@ def test_bias_fp_only_on_flagged_orders():
         bias_hints=hints,
     )
     assert not_flagged is None
+
+
+def test_batch_majority_pattern_mass(tmp_path: Path):
+    store = LabelTicketStore(tmp_path / "t.db", stream_path=tmp_path / "t.jsonl")
+    policy = _policy()
+    policy["feedback"]["daily_review_quota"] = 20
+    policy["feedback"]["per_head_min"] = 0
+    policy["feedback"]["per_head_max"] = 20
+    policy["learning"] = {
+        "pattern_mass_fraction": 0.7,
+        "pattern_strata": {
+            "cancelled_offline": {"score_min": 0.85},
+            "cancel_abuse": {"score_min": 0.70},
+            "selective_theft": {"score_min": 0.70},
+        },
+    }
+    assessments = []
+    for i in range(30):
+        assessments.append(
+            _result(
+                f"M{i}",
+                scores={
+                    "cancelled_offline": 0.9,
+                    "cancel_abuse": 0.1,
+                    "selective_theft": 0.1,
+                },
+            )
+        )
+    for i in range(30):
+        assessments.append(
+            _result(
+                f"U{i}",
+                scores={
+                    "cancelled_offline": 0.75,
+                    "cancel_abuse": 0.1,
+                    "selective_theft": 0.1,
+                },
+            )
+        )
+    created = run_batch_sample(store, assessments, policy)
+    assert 20 <= len(created) <= 21
+    mass = sum(1 for t in created if t["sampling_reason"] == "pattern_mass")
+    assert mass >= int(0.6 * len(created))
 
 
 def test_unique_order_day_constraint(tmp_path: Path):

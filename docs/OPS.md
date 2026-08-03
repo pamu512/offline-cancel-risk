@@ -14,7 +14,9 @@ Audience: ops/platform engineers integrating the service, and product teams wiri
 | Publishers | JSONL risk stream + SQLite assessments / feedback |
 | Policy | Default YAML + region/city overlays inside guardrails |
 | Feedback sampler | Daily label-ticket quota (inline + batch) |
-| Control plane | Label F1, supply operating point, hardgates, tuner, audit |
+| Control plane | Pattern-cohort precision/recall, supply operating point, hardgates, tuner, audit |
+| Entity baselines | Rolling+EWMA driver/user/pair baselines; band-limited FP dampener (`mode: shadow` default) |
+| Platform patterns | Cancel stage, heading-aware A→B progress, teleport dampen, cancel-rate/pair density, evidence pack |
 | Models | Optional joblib/ONNX champion / shadow / canary |
 
 **Ownership boundary**
@@ -70,10 +72,12 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_LABEL_TICKETS_PATH` | `data/label_tickets.db` | Review tickets |
 | `OCR_LABEL_TICKETS_STREAM_PATH` | `data/label_tickets.jsonl` | Ticket stream |
 | `OCR_DRIVER_CHAINS_PATH` | `data/driver_chains.db` | Cross-order cancel chains |
+| `OCR_ENTITY_BASELINES_PATH` | `data/entity_baselines.db` | Driver/user/pair score baselines |
+| `OCR_ENTITY_CANCEL_STATS_PATH` | `data/entity_cancel_stats.db` | Cancel-rate / pair density events |
 | `OCR_MODELS_*` | under `data/` | Registry, shadow metrics, canary |
 | `OCR_TUNER_MIN_LABELED` | `30` | Min labels before auto-apply |
 | `OCR_TUNER_COOLDOWN_MINUTES` | `60` | Min gap between applies per head/market |
-| `OCR_TUNER_MIN_F1_LIFT` | `0.01` | Holdout F1 lift required to apply |
+| `OCR_TUNER_MIN_F1_LIFT` | `0.01` | Min holdout **pattern-cohort recall** lift to apply |
 | `OCR_METRICS_DEBOUNCE_SECONDS` | `30` | Coalesce feedback → tune |
 | `OCR_CONTROL_PLANE_TICK_SECONDS` | `0` | Periodic sample+tune (`0` = off) |
 
@@ -211,17 +215,42 @@ Manual overlay writes are audited as `manual_overlay`.
 | `feedback.daily_review_quota` + per-head min/max | Label budget | Reviewer capacity |
 | `ear.*` | $ attention ranking | Ops prioritization, not flags |
 
-### 4.3 Supply-aware operating point
+### 4.3 Entity baselines (driver / user / pair)
+
+`policy.baselines` tracks rolling-window + EWMA score baselines per entity×head.
+
+- **Default `mode: shadow`** — writes baselines + `baseline_meta` / `baseline_shadow:*` reasons; does **not** change scores until you set `mode: apply` (per-head overrides allowed; theft defaults to shadow).
+- Discount (apply) only when score is in `(baseline + above_epsilon, armed_thr)` — never damps absolute threshold crossings.
+- Assessments store `scores_raw` (pre-discount) for learning joins; warehouse pulls `GET /v1/baselines?updated_since=...`.
+- Pair uses `pair_window_n` (smaller); backoff prefers pair → driver → user.
+
+See [entity-baseline-gate design](superpowers/specs/2026-08-03-entity-baseline-gate-design.md).
+
+### 4.4 Learning objective (pattern precision)
+
+Primary goal: **detect recurring behavioral patterns** that make up ~98% of labelable mass. Explicitly deprioritize novel/exotic fraud and latency.
+
+Interpretation of “98%”: aim ~**0.98 precision on the pattern cohort** \(S\) (common strata in `policy.learning.pattern_strata`), then maximize **recall on \(S\)**. This is **not** global fraud recall and **not** global F1.
+
+| Metric | Use |
+|---|---|
+| Precision / recall on \(S\) | Tuner objective and apply gates |
+| Global P/R/F1 on all labels | Monitoring / dashboards only |
+| Novel / long-tail cases | Out of scope until \(S\) is stable |
+
+Config: `policy.learning` (`target_precision`, `min_pattern_support`, `min_pattern_recall`, `pattern_mass_fraction`, `blend_search_min_support`, `pattern_strata`).
+
+### 4.5 Supply-aware operating point
 
 `config/operating_point.default.yaml` maps `supply_ratio = forecast_supply / forecast_demand`:
 
 - **Peak / tight supply** (low ratio) → higher min precision, lower min recall  
-- **Surplus** (high ratio) → higher min recall, looser precision floor  
+- **Surplus** (high ratio) → modestly higher min recall, looser precision floor (soft; must not force a 2% chase)  
 - Mid ratios interpolate  
 
-The tuner **must** keep labeled precision/recall inside that band (plus guardrails + hardgates).
+Pattern-cohort precision remains the tuner’s hard learning gate; supply bands are ops context, not a license to over-recall the tail.
 
-### 4.4 Auto-tuner (when to trust it)
+### 4.6 Auto-tuner (when to trust it)
 
 Trigger:
 
@@ -233,9 +262,11 @@ Trigger:
 Behavior:
 
 1. Join assessments ↔ labels → train / holdout split  
-2. Grid-search thresholds (and offline blend / `p1_attention_min`)  
-3. Candidate must pass operating-point P/R, hardgates, guardrails  
-4. Apply overlay only if **holdout F1** lifts by ≥ `OCR_TUNER_MIN_F1_LIFT` and cooldown elapsed  
+2. Restrict metrics to **pattern cohort** \(S\) per head  
+3. Grid-search thresholds (blend / `p1_attention_min` only if pattern support ≥ `blend_search_min_support`)  
+4. Candidate must hit holdout \(\mathrm{Precision}_S \ge\) `target_precision` and \(\mathrm{Recall}_S \ge\) `min_pattern_recall`, plus hardgates / guardrails  
+5. Among candidates, maximize holdout \(\mathrm{Recall}_S\) (tie-break: higher precision)  
+6. Apply overlay only if holdout **pattern recall** lifts by ≥ `OCR_TUNER_MIN_F1_LIFT` and cooldown elapsed  
 
 Inspect:
 
@@ -245,9 +276,9 @@ curl 'localhost:8000/v1/tuning/suggestions?limit=20'
 curl 'localhost:8000/v1/audit/policy?limit=50'
 ```
 
-**Do not** rely on auto-tune with &lt; `tuner_min_labeled` labels per head/market—it will reject with `insufficient_labels`.
+**Do not** rely on auto-tune with &lt; `learning.min_pattern_support` labeled pattern-cohort examples per head/market—it will reject with `insufficient_pattern_labels`.
 
-### 4.5 Recommended tuning loop (human + auto)
+### 4.7 Recommended tuning loop (human + auto)
 
 1. Set forecast + hardgates for the market week.  
 2. Run assess at volume; let sampler fill review quota.  
@@ -256,7 +287,7 @@ curl 'localhost:8000/v1/audit/policy?limit=50'
 5. If Downstream claws back, post clawback; expect tighter gates for the TTL.  
 6. Revisit guardrail ceilings only when Product + Risk agree (absolute safety bounds).
 
-### 4.6 Models (optional)
+### 4.8 Models (optional)
 
 Bundle: `model.json` (`joblib`|`onnx`) + artifact + `feature_schema.json` + `metrics_baseline.json`.
 
@@ -275,12 +306,12 @@ Serving flags use **champion** (or canary cohort). Shadow scores are recorded wi
 
 | Mode | Behavior |
 |---|---|
-| Inline | After assess: disagreement → uncertainty → score-matched bias_fp/bias_fn, until `quota * inline_soft_cap_fraction` |
-| Batch | Fills remainder to daily quota (±1), per-head min/max, coverage strata |
+| Inline | After assess: disagreement → **pattern_mass** → uncertainty → score-matched bias_fp/bias_fn, until `quota * inline_soft_cap_fraction` |
+| Batch | ~`learning.pattern_mass_fraction` (default 0.7) clear pattern tickets, then boundary/bias, then coverage to daily quota (±1) |
 
 Tickets: one primary head each; unique `(order_display_id, day_key)`. Emitted to SQLite + JSONL stream.
 
-Config under `policy.feedback` (also guardrailed where numeric).
+Config under `policy.feedback` + `policy.learning` (feedback numerics also guardrailed).
 
 ---
 
@@ -295,6 +326,7 @@ Config under `policy.feedback` (also guardrailed where numeric).
 | `data/control_plane.db` | Forecast, hardgates, clawback, label metrics, audit |
 | `data/label_tickets.db` | Review tickets |
 | `data/driver_chains.db` | Driver cancel events |
+| `data/entity_baselines.db` | Driver/user/pair baselines |
 | `data/models.db` + `data/models/` | Model registry / artifacts |
 | `data/*.jsonl` | Streams (risk events, label tickets) |
 
@@ -372,6 +404,8 @@ Debounce / tick loops are **in-process**. Multiple API replicas will each run th
 | PUT/GET | `/v1/supply/forecast` | S&D forecast |
 | PUT/GET | `/v1/enforcement/hardgates` | Volume caps |
 | POST | `/v1/enforcement/clawback` | Clawback signal |
+| GET | `/v1/baselines` | Entity baselines (`updated_since` cursor) |
+| GET | `/v1/baselines/{entity_key}` | All heads for `driver:1` / `user:2` / `pair:1:2` |
 | GET | `/v1/metrics/labels` | P/R/F1 snapshots |
 | POST | `/v1/tuning/run` | Metrics + tuner |
 | GET | `/v1/tuning/suggestions` | Recent suggest/apply/reject |
@@ -388,3 +422,9 @@ Control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1`.
 - [specs/2026-07-25-phase2-control-plane-design.md](superpowers/specs/2026-07-25-phase2-control-plane-design.md)  
 - [specs/2026-07-25-feedback-tuning-design.md](superpowers/specs/2026-07-25-feedback-tuning-design.md)  
 - [specs/2026-07-26-feedback-sampler-design.md](superpowers/specs/2026-07-26-feedback-sampler-design.md)  
+- [specs/2026-08-03-learning-objective-design.md](superpowers/specs/2026-08-03-learning-objective-design.md)  
+- [specs/2026-08-03-entity-baseline-gate-design.md](superpowers/specs/2026-08-03-entity-baseline-gate-design.md)  
+- [specs/2026-08-03-platform-abuse-patterns-design.md](superpowers/specs/2026-08-03-platform-abuse-patterns-design.md)  
+
+
+

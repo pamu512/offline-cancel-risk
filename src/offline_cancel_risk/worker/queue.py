@@ -8,13 +8,15 @@ from uuid import uuid4
 from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.baselines.store import EntityBaselineStore
+from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.features.driver_chains import DriverChainStore
+from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
+from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
-from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
-from offline_cancel_risk.features.driver_chains import DriverChainStore
-from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
-from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
@@ -62,6 +64,8 @@ class AssessJobQueue:
         bias_hints: dict[str, str] | None = None,
         label_metrics: LabelMetricsStore | None = None,
         driver_chains: DriverChainStore | None = None,
+        baselines: EntityBaselineStore | None = None,
+        cancel_stats: EntityCancelStatsStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -83,6 +87,8 @@ class AssessJobQueue:
                 tickets=tickets,
                 bias_hints=hints,
                 driver_chains=driver_chains,
+                baselines=baselines,
+                cancel_stats=cancel_stats,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -105,6 +111,8 @@ class AssessJobQueue:
         bias_hints: dict[str, str] | None = None,
         label_metrics: LabelMetricsStore | None = None,
         driver_chains: DriverChainStore | None = None,
+        baselines: EntityBaselineStore | None = None,
+        cancel_stats: EntityCancelStatsStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -123,6 +131,8 @@ class AssessJobQueue:
                     bias_hints=bias_hints,
                     label_metrics=label_metrics,
                     driver_chains=driver_chains,
+                    baselines=baselines,
+                    cancel_stats=cancel_stats,
                 )
             finally:
                 self._queue.task_done()

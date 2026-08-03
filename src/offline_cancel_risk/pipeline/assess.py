@@ -14,26 +14,36 @@ from offline_cancel_risk.api.schemas import (
     ThreeHeadMlScores,
     ThreeHeadScores,
 )
+from offline_cancel_risk.baselines.gate import apply_baselines
+from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.abuse import abuse_feature_score
 from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
 from offline_cancel_risk.features.dwell import dwell_stop_mask
+from offline_cancel_risk.features.driver_chains import DriverChainStore
+from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.evidence import build_evidence
 from offline_cancel_risk.features.geo import haversine, parse_latlong
+from offline_cancel_risk.features.gps_integrity import (
+    analyze_gps_integrity,
+    dampen_stop_confidence,
+)
 from offline_cancel_risk.features.lineage import build_lineage_id
+from offline_cancel_risk.features.progress import analyze_progress
 from offline_cancel_risk.features.replacement import (
     compute_route_similarity,
     evaluate_replacement,
 )
 from offline_cancel_risk.features.sequence import sequence_match_score
+from offline_cancel_risk.features.stages import cancel_after_pickup, resolve_cancel_stage
 from offline_cancel_risk.features.theft import theft_feature_score
-from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
-from offline_cancel_risk.pipeline.window import resolve_gps_window
+from offline_cancel_risk.feedback.sampler import safe_inline_sample
+from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
-from offline_cancel_risk.features.driver_chains import DriverChainStore
-from offline_cancel_risk.feedback.sampler import safe_inline_sample
-from offline_cancel_risk.feedback.tickets import LabelTicketStore
+from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
+from offline_cancel_risk.pipeline.window import resolve_gps_window
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 from offline_cancel_risk.policy.routing import build_routing
 from offline_cancel_risk.policy.service import resolved_policy_for_market
@@ -107,6 +117,8 @@ async def assess_order(
     tickets: LabelTicketStore | None = None,
     bias_hints: dict[str, str] | None = None,
     driver_chains: DriverChainStore | None = None,
+    baselines: EntityBaselineStore | None = None,
+    cancel_stats: EntityCancelStatsStore | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
         policy = resolved_policy_for_market(
@@ -196,6 +208,9 @@ async def assess_order(
         window.points, stops, policy["sequence"]
     )
 
+    integrity = analyze_gps_integrity(window.points, policy=policy)
+    final_stop_confidence = dampen_stop_confidence(final_stop_confidence, integrity)
+
     conf_threshold = float(policy["dbscan"]["confidence_threshold"])
     last_conf = confidence_list[-1] if confidence_list else 0.0
     last_dwell = dwell_masks[-1] if dwell_masks else False
@@ -218,6 +233,26 @@ async def assess_order(
     )
     lineage_id = build_lineage_id(req.order_display_id, req.reassign_cancel_events)
 
+    stage, stage_meta = resolve_cancel_stage(window.points, stops, policy=policy)
+    after_pickup = cancel_after_pickup(stage)
+    pickup_target = stops[0] if stops else (0.0, 0.0)
+    progress = (
+        analyze_progress(
+            window.points,
+            pickup_target,
+            assign_ts=req.assign_ts,
+            policy=policy,
+        )
+        if stops
+        else {
+            "progress_ratio": 0.0,
+            "no_progress": False,
+            "wrong_direction": False,
+            "reasons": [],
+            "heading_available": False,
+        }
+    )
+
     near_dest = _cancel_near_destination(
         window.points,
         stops,
@@ -238,12 +273,50 @@ async def assess_order(
         )
     driver_chain_count = max(len(driver_ids), cross_order_chain + 1)
 
+    stats_window = int(
+        policy.get("abuse", {}).get("cancel_stats_window_minutes", 120)
+    )
+    cancel_rate = None
+    driver_cancel_count = 0
+    pair_cancel_count = 0
+    if cancel_stats is not None:
+        try:
+            cancel_stats.record_cancel(
+                driver_id=int(req.driver_id),
+                user_id=req.user_id,
+                order_display_id=req.order_display_id,
+                event_ts=req.cancel_ts,
+            )
+            st = cancel_stats.stats(
+                driver_id=int(req.driver_id),
+                user_id=req.user_id,
+                as_of=req.cancel_ts,
+                window_minutes=stats_window,
+                exclude_order_id=req.order_display_id,
+            )
+            driver_cancel_count = int(st["driver_cancel_count"])
+            cancel_rate = float(st["driver_cancel_rate"])
+            pair_cancel_count = int(st["pair_cancel_count"])
+        except Exception:
+            _LOG.exception(
+                "Entity cancel stats failed for order=%s", req.order_display_id
+            )
+
+    device_risk = dict(req.device_risk or {}) if req.device_risk else {}
+
     abuse_score, abuse_reasons = abuse_feature_score(
         {
             "order_still_active": _order_still_active(req.order_status),
             "cancel_event_count": len(req.reassign_cancel_events) + 1,
             "driver_chain_count": driver_chain_count,
             "cancel_near_destination": near_dest,
+            "cancel_after_pickup": after_pickup,
+            "no_progress": bool(progress.get("no_progress")),
+            "wrong_direction": bool(progress.get("wrong_direction")),
+            "driver_cancel_count": driver_cancel_count,
+            "driver_cancel_rate": cancel_rate or 0.0,
+            "pair_cancel_count": pair_cancel_count,
+            "device_risk": device_risk,
         },
         policy["abuse"],
     )
@@ -252,6 +325,8 @@ async def assess_order(
             "category": req.category,
             "order_value": req.order_value,
             "next_driver_no_order": bool(req.next_driver_no_order),
+            "cancel_after_pickup": after_pickup,
+            "stage": stage,
         },
         policy["theft"],
     )
@@ -269,12 +344,31 @@ async def assess_order(
         "replacement_reasons": list(replacement.reason_codes),
     }
     rule_scores, reasons = compute_rule_scores(features, policy)
+    reasons = [
+        *reasons,
+        *list(integrity.get("reasons") or []),
+        *list(progress.get("reasons") or []),
+        f"stage:{stage}",
+    ]
     if gps_unavailable:
         reasons = [*reasons, "gps_unavailable"]
     if sparse:
         reasons = [*reasons, "gps_sparse"]
     if float(gps_window["max_gap_minutes"]) > float(gps_policy["max_gap_minutes"]):
         reasons = [*reasons, "gps_gaps"]
+
+    evidence = build_evidence(
+        stage=stage,
+        stage_meta=stage_meta,
+        progress=progress,
+        integrity=integrity,
+        cancel_rate=cancel_rate,
+        pair_cancel_count=pair_cancel_count,
+        driver_chain_count=driver_chain_count,
+        abuse_reasons=abuse_reasons,
+        theft_reasons=theft_reasons,
+        final_stop_confidence=final_stop_confidence,
+    )
 
     ml_feature_vec = {
         "final_stop_confidence": float(final_stop_confidence),
@@ -321,6 +415,27 @@ async def assess_order(
             reasons = [*reasons, "champion_predict_failed"]
 
     scores = blend_scores(rule_scores, ml_scores, policy)
+    scores_raw = dict(scores)
+    baseline_meta: dict[str, dict[str, object]] = {}
+    if baselines is not None:
+        try:
+            scores, baseline_reasons, baseline_meta = apply_baselines(
+                baselines,
+                scores=scores,
+                thresholds={
+                    k: float(v) for k, v in (policy.get("thresholds") or {}).items()
+                },
+                policy=policy,
+                driver_id=int(req.driver_id),
+                user_id=req.user_id,
+                region_code=(req.region_code or ""),
+                city_code=(req.city_code or ""),
+            )
+            reasons = [*reasons, *baseline_reasons]
+        except Exception:
+            _LOG.exception(
+                "Entity baseline gate failed for order=%s", req.order_display_id
+            )
     flags = apply_thresholds(scores, policy)
 
     if registry is not None:
@@ -428,6 +543,10 @@ async def assess_order(
         routing=build_routing(
             flags=flags, attention_score=float(attention), policy=policy
         ),
+        scores_raw=ThreeHeadScores(**scores_raw),
+        baseline_meta=baseline_meta,
+        cancel_stage=stage,
+        evidence=evidence,
     )
 
     # Dual-write: table first so idempotent cache survives stream failures.

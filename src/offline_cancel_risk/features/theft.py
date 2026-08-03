@@ -24,4 +24,15 @@ def theft_feature_score(
         score += 0.33
         reasons.append("next_driver_no_order")
 
+    # Pickup-then-cancel on food is classic selective theft / ghost complete pattern.
+    if ctx.get("cancel_after_pickup") and category in food_categories:
+        score += float(policy.get("cancel_after_pickup_bonus", 0.2))
+        reasons.append("cancel_after_pickup")
+        score = min(score, 1.0)
+
+    if ctx.get("stage") == "near_dropoff" and ctx.get("next_driver_no_order"):
+        score += float(policy.get("near_dropoff_no_order_bonus", 0.15))
+        reasons.append("near_dropoff_no_order")
+        score = min(score, 1.0)
+
     return min(score, 1.0), reasons

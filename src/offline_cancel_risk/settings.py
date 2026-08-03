@@ -24,6 +24,8 @@ class Settings(BaseSettings):
     label_tickets_path: str = str(ROOT / "data" / "label_tickets.db")
     label_tickets_stream_path: str = str(ROOT / "data" / "label_tickets.jsonl")
     driver_chains_path: str = str(ROOT / "data" / "driver_chains.db")
+    entity_baselines_path: str = str(ROOT / "data" / "entity_baselines.db")
+    entity_cancel_stats_path: str = str(ROOT / "data" / "entity_cancel_stats.db")
     operating_point_path: str = str(
         ROOT / "config" / "operating_point.default.yaml"
     )

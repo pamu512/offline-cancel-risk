@@ -27,11 +27,39 @@ replacement:
 theft:
   high_value_amount: 500
   food_categories: ["FOOD", "FOOD_DELIVERY"]
+  cancel_after_pickup_bonus: 0.2
+  near_dropoff_no_order_bonus: 0.15
 abuse:
   multi_cancel_window_minutes: 120
   near_dest_radius_m: 400
   # Cross-order cancel/reassign chain lookback for driver_chain_count.
   chain_lookback_minutes: 120
+  cancel_stats_window_minutes: 120
+  cancel_after_pickup_bonus: 0.2
+  no_progress_bonus: 0.2
+  wrong_direction_bonus: 0.25
+  cancel_rate_min_count: 4
+  cancel_rate_threshold: 2.0
+  cancel_rate_bonus: 0.2
+  pair_cancel_min: 3
+  pair_density_bonus: 0.2
+  device_risk_score_threshold: 0.7
+  device_risk_bonus: 0.15
+  device_rooted_bonus: 0.1
+stages:
+  merchant_radius_m: 150
+  dropoff_radius_m: 400
+progress:
+  window_minutes: 8
+  max_heading_error_deg: 60
+  away_heading_error_deg: 120
+  min_points: 3
+  no_progress_ratio: 0.15
+  min_start_distance_m: 200
+gps_integrity:
+  max_speed_mps: 55
+  teleport_jump_m: 2000
+  stop_confidence_dampen: 0.5
 blend:
   # When ml_scores are null, blend falls back to rules only.
   cancelled_offline: {rule_weight: 0.6, ml_weight: 0.4}
@@ -56,6 +84,43 @@ feedback:
   per_head_min: 5
   per_head_max: 25
   uncertainty_delta: 0.1
+# Entity baselines: FP dampener in (baseline+ε, armed_thr); default shadow.
+baselines:
+  mode: shadow
+  window_n: 20
+  pair_window_n: 8
+  under_fraction: 0.9
+  ewma_alpha: 0.2
+  ewma_delta: 0.05
+  min_ewma_samples: 10
+  above_epsilon: 0.1
+  above_fraction: 0.9
+  discount: 0.85
+  refresh_epsilon: 0.05
+  max_age_days: 90
+  heads:
+    cancelled_offline:
+      enabled: true
+    cancel_abuse:
+      enabled: true
+      discount: 0.90
+    selective_theft:
+      enabled: true
+      mode: shadow
+# Precision-first learning on common behavioral patterns (~98% mass).
+learning:
+  target_precision: 0.98
+  min_pattern_support: 15
+  min_pattern_recall: 0.35
+  pattern_mass_fraction: 0.7
+  blend_search_min_support: 40
+  pattern_strata:
+    cancelled_offline:
+      score_min: 0.85
+    cancel_abuse:
+      score_min: 0.70
+    selective_theft:
+      score_min: 0.70
 routing:
   # Prioritized review routing from attention_score + flags (downstream may use queue).
   p1_attention_min: 200

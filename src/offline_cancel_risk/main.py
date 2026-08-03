@@ -9,7 +9,9 @@ from fastapi import FastAPI
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient, HttpGpsClient
 from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
 from offline_cancel_risk.api.routes import router
+from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
+from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
 from offline_cancel_risk.control_plane.loop import ControlPlaneLoop
@@ -63,6 +65,8 @@ def create_app(
         stream_path=settings.label_tickets_stream_path,
     )
     chain_store = DriverChainStore(settings.driver_chains_path)
+    baseline_store = EntityBaselineStore(settings.entity_baselines_path)
+    cancel_stats_store = EntityCancelStatsStore(settings.entity_cancel_stats_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -108,6 +112,8 @@ def create_app(
                     tickets=ticket_store,
                     label_metrics=label_metrics_store,
                     driver_chains=chain_store,
+                    baselines=baseline_store,
+                    cancel_stats=cancel_stats_store,
                 )
             )
         control_loop.start()
@@ -137,6 +143,8 @@ def create_app(
     app.state.operating_point_cfg = operating_point_cfg
     app.state.tickets = ticket_store
     app.state.driver_chains = chain_store
+    app.state.baselines = baseline_store
+    app.state.cancel_stats = cancel_stats_store
     app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue

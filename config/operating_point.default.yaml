@@ -10,7 +10,8 @@ peak:
 surplus:
   ratio: 1.2
   min_precision: 0.70
-  min_recall: 0.75
+  # Soft floor only — must not force chasing the long-tail 2% over pattern precision.
+  min_recall: 0.50
   # Ceiling stays open; surplus loosens the floor, it does not forbid high precision.
   max_precision: 1.0
   max_recall: 1.0

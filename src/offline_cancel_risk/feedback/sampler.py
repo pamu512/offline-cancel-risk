@@ -1,4 +1,4 @@
-"""Hybrid inline + batch label ticket sampler."""
+"""Hybrid inline + batch label ticket sampler (pattern-mass first)."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import logging
 from typing import Any
 
 from offline_cancel_risk.api.schemas import AssessmentResult
+from offline_cancel_risk.control_plane.patterns import learning_cfg, pattern_heads
 from offline_cancel_risk.feedback.tickets import LabelTicketStore, utc_day_key
 
 _LOG = logging.getLogger(__name__)
@@ -13,6 +14,7 @@ _HEADS = ("cancelled_offline", "cancel_abuse", "selective_theft")
 
 _PRIORITY = {
     "disagreement": 100,
+    "pattern_mass": 90,
     "uncertainty": 80,
     "bias_fp": 70,
     "bias_fn": 70,
@@ -43,10 +45,12 @@ def evaluate_inline_reason(
     ml_scores: dict[str, float | None],
     policy: dict[str, Any],
     bias_hints: dict[str, str] | None = None,
+    reasons: list[str] | None = None,
 ) -> tuple[str, str, dict[str, Any]] | None:
     """Return (reason, primary_head, strata) or None.
 
     One primary head per ticket so daily per-head quota math stays honest.
+    Priority: disagreement → pattern_mass → uncertainty → bias.
     """
     cfg = _feedback_cfg(policy)
     delta = float(cfg.get("uncertainty_delta", 0.1))
@@ -69,6 +73,16 @@ def evaluate_inline_reason(
             "disagreement",
             primary,
             {"heads": disagree_heads, "primary": primary, "delta": delta},
+        )
+
+    assess_proxy = {"scores": scores, "reasons": list(reasons or [])}
+    mass_heads = pattern_heads(assess_proxy, policy)
+    if mass_heads:
+        primary = mass_heads[0]
+        return (
+            "pattern_mass",
+            primary,
+            {"heads": mass_heads, "primary": primary, "band": "pattern"},
         )
 
     uncertain: list[tuple[float, str]] = []
@@ -163,6 +177,7 @@ def try_inline_sample(
         ml_scores=result.ml_scores.model_dump(),
         policy=policy,
         bias_hints=bias_hints,
+        reasons=list(result.reasons or []),
     )
     if reason is None:
         return None
@@ -190,9 +205,11 @@ def run_batch_sample(
     city_code: str = "",
 ) -> list[dict[str, Any]]:
     cfg = _feedback_cfg(policy)
+    learn = learning_cfg(policy)
     quota = int(cfg.get("daily_review_quota", 50))
     per_min = int(cfg.get("per_head_min", 5))
     per_max = int(cfg.get("per_head_max", 25))
+    mass_frac = float(learn.get("pattern_mass_fraction", 0.7))
     day = utc_day_key()
     labeled_order_ids = labeled_order_ids or set()
     bias_hints = bias_hints or {}
@@ -206,6 +223,8 @@ def run_batch_sample(
         return created
 
     head_counts = store.head_counts(day)
+    mass_target = max(0, int(round(remaining * mass_frac)))
+    mass_left = mass_target
 
     def _eligible() -> list[AssessmentResult]:
         out: list[AssessmentResult] = []
@@ -226,7 +245,7 @@ def run_batch_sample(
     def _try_create(
         a: AssessmentResult, reason: str, head: str, strata: dict[str, Any]
     ) -> bool:
-        nonlocal remaining
+        nonlocal remaining, mass_left
         if remaining <= 0:
             return False
         if head_counts.get(head, 0) >= per_max:
@@ -246,8 +265,28 @@ def run_batch_sample(
         created.append(ticket)
         remaining -= 1
         head_counts[head] = head_counts.get(head, 0) + 1
+        if reason == "pattern_mass":
+            mass_left -= 1
         return True
 
+    # 1) Pattern-mass fill (~70% of remaining quota).
+    for a in list(candidates):
+        if remaining <= 0 or mass_left <= 0:
+            break
+        heads = pattern_heads(a, policy)
+        if not heads:
+            continue
+        heads.sort(key=lambda h: head_counts.get(h, 0))
+        head = heads[0]
+        if _try_create(
+            a,
+            "pattern_mass",
+            head,
+            {"heads": heads, "primary": head, "band": "pattern"},
+        ):
+            candidates.remove(a)
+
+    # 2) Boundary / disagreement / bias for the rest of the mix.
     for a in list(candidates):
         if remaining <= 0:
             break
@@ -257,13 +296,18 @@ def run_batch_sample(
             ml_scores=a.ml_scores.model_dump(),
             policy=policy,
             bias_hints=bias_hints,
+            reasons=list(a.reasons or []),
         )
         if reason is None:
             continue
         sampling_reason, primary, strata = reason
+        if sampling_reason == "pattern_mass":
+            # Already had a mass pass; skip re-creating as mass after budget.
+            continue
         if _try_create(a, sampling_reason, primary, strata):
             candidates.remove(a)
 
+    # 3) Per-head coverage floors.
     for head in _HEADS:
         while head_counts.get(head, 0) < per_min and remaining > 0:
             delta = float(cfg.get("uncertainty_delta", 0.1))

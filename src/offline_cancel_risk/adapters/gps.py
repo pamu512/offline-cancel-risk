@@ -11,17 +11,26 @@ from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.timeutil import parse_ts
 
 
+def _optional_float(item: dict, *keys: str) -> float | None:
+    for key in keys:
+        if key in item and item[key] is not None and item[key] != "":
+            return float(item[key])
+    return None
+
+
 def map_gps_json(items: list[dict]) -> list[GpsPoint]:
     """Map a JSON list of GPS records to GpsPoint. Keep path/schema mapping here."""
     out: list[GpsPoint] = []
     for item in items:
-        speed = item.get("speed_mps")
+        speed = _optional_float(item, "speed_mps", "speed")
+        heading = _optional_float(item, "heading_deg", "heading", "course")
         out.append(
             GpsPoint(
                 lat=float(item["lat"]),
                 lon=float(item["lon"]),
                 ts=str(item["ts"]),
-                speed_mps=None if speed is None else float(speed),
+                speed_mps=speed,
+                heading_deg=heading,
             )
         )
     return out
@@ -68,6 +77,12 @@ class CsvGpsClient:
                     if speed_raw is None or speed_raw == ""
                     else float(speed_raw)
                 )
+                heading_raw = row.get("heading_deg") or row.get("heading")
+                heading = (
+                    None
+                    if heading_raw is None or heading_raw == ""
+                    else float(heading_raw)
+                )
                 rows.append(
                     (
                         int(row["driver_id"]),
@@ -76,6 +91,7 @@ class CsvGpsClient:
                             lon=float(row["lon"]),
                             ts=row["ts"],
                             speed_mps=speed,
+                            heading_deg=heading,
                         ),
                     )
                 )
