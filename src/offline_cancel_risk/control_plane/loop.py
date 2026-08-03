@@ -6,17 +6,18 @@ import asyncio
 import logging
 from typing import Any
 
-from offline_cancel_risk.adapters.publishers import SqliteTablePublisher
 from offline_cancel_risk.control_plane.cycle import (
     assessments_as_dicts,
     markets_from_assessments,
     run_metrics_and_tune,
 )
+from offline_cancel_risk.control_plane.leader import FileLeaderLock
 from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
     run_batch_sample,
 )
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
+from offline_cancel_risk.ports import AssessmentStore
 
 _LOG = logging.getLogger(__name__)
 
@@ -24,8 +25,8 @@ _LOG = logging.getLogger(__name__)
 class ControlPlaneLoop:
     """Background debounce + optional periodic tick.
 
-    ponytail: in-process asyncio only — fine for single-replica demo; multi-replica
-    needs an external lock / queue.
+    Multi-replica: optional FileLeaderLock skips ticks/debounced flushes when
+    another process holds the lockfile.
     """
 
     def __init__(
@@ -34,9 +35,10 @@ class ControlPlaneLoop:
         debounce_seconds: float,
         tick_seconds: float,
         run_kwargs: dict[str, Any],
-        table: SqliteTablePublisher,
+        table: AssessmentStore,
         tickets: LabelTicketStore,
         sample_on_tick: bool = True,
+        leader: FileLeaderLock | None = None,
     ) -> None:
         self._debounce_s = max(0.0, float(debounce_seconds))
         self._tick_s = max(0.0, float(tick_seconds))
@@ -44,10 +46,16 @@ class ControlPlaneLoop:
         self._table = table
         self._tickets = tickets
         self._sample_on_tick = sample_on_tick
+        self._leader = leader
         self._pending: set[tuple[str, str]] = set()
         self._debounce_task: asyncio.Task[None] | None = None
         self._tick_task: asyncio.Task[None] | None = None
         self._lock = asyncio.Lock()
+
+    def _is_leader(self) -> bool:
+        if self._leader is None:
+            return True
+        return self._leader.try_acquire()
 
     def notify_feedback(self, order_display_id: str) -> None:
         latest = self._table.latest(order_display_id)
@@ -79,6 +87,8 @@ class ControlPlaneLoop:
             _LOG.exception("Debounced control-plane flush failed")
 
     async def flush_pending(self, *, reason: str) -> list[dict[str, Any]]:
+        if not self._is_leader():
+            return []
         async with self._lock:
             markets = list(self._pending)
             self._pending.clear()
@@ -111,6 +121,8 @@ class ControlPlaneLoop:
                 _LOG.exception("Control-plane tick failed")
 
     async def _run_tick(self) -> None:
+        if not self._is_leader():
+            return
         assessments = self._table.list_latest_assessments()
         if self._sample_on_tick:
             labeled = {f["order_display_id"] for f in self._table.list_feedback()}
@@ -160,3 +172,5 @@ class ControlPlaneLoop:
                     pass
         self._debounce_task = None
         self._tick_task = None
+        if self._leader is not None:
+            self._leader.release()

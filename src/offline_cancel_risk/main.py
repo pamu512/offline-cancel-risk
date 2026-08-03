@@ -2,12 +2,16 @@ from __future__ import annotations
 
 import asyncio
 from contextlib import asynccontextmanager
+from pathlib import Path
 from typing import AsyncIterator
 
 from fastapi import FastAPI
 
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient, HttpGpsClient
-from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
+from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher
+from offline_cancel_risk.adapters.queue_factory import make_job_queue
+from offline_cancel_risk.adapters.store_factory import make_assessment_store
+from offline_cancel_risk.ports import AssessmentStore
 from offline_cancel_risk.api.routes import router
 from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
@@ -18,6 +22,7 @@ from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
+from offline_cancel_risk.control_plane.leader import FileLeaderLock
 from offline_cancel_risk.control_plane.loop import ControlPlaneLoop
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
@@ -26,8 +31,7 @@ from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
-from offline_cancel_risk.settings import Settings, get_settings, load_policy
-from offline_cancel_risk.worker.queue import AssessJobQueue
+from offline_cancel_risk.settings import Settings, apply_profile, get_settings, load_policy
 
 
 def _default_gps_client(settings: Settings) -> GpsClient:
@@ -44,16 +48,16 @@ def create_app(
     gps_client: GpsClient | None = None,
     settings: Settings | None = None,
     stream: JsonlStreamPublisher | None = None,
-    table: SqliteTablePublisher | None = None,
+    table: AssessmentStore | None = None,
     registry: ModelRegistry | None = None,
     shadow_metrics: ShadowMetricsStore | None = None,
     canary: CanaryController | None = None,
     overlays: PolicyOverlayStore | None = None,
 ) -> FastAPI:
-    settings = settings or get_settings()
+    settings = apply_profile(settings or get_settings())
     gps = gps_client if gps_client is not None else _default_gps_client(settings)
     stream_pub = stream or JsonlStreamPublisher(stream_path=settings.stream_path)
-    table_pub = table or SqliteTablePublisher(sqlite_path=settings.sqlite_path)
+    table_pub = table or make_assessment_store(settings)
     policy = load_policy(settings.policy_path)
     guardrails = load_policy(settings.policy_guardrails_path)
     gates = load_policy(settings.promote_gates_path)
@@ -84,7 +88,11 @@ def create_app(
         gates=gates,
         thresholds={k: float(v) for k, v in policy["thresholds"].items()},
     )
-    queue = AssessJobQueue()
+    queue = make_job_queue(settings)
+    lock_path = settings.control_plane_lock_path.strip() or str(
+        Path(settings.control_plane_sqlite_path).with_suffix(".lock")
+    )
+    leader = FileLeaderLock(lock_path)
     control_loop = ControlPlaneLoop(
         debounce_seconds=settings.metrics_debounce_seconds,
         tick_seconds=settings.control_plane_tick_seconds,
@@ -101,6 +109,7 @@ def create_app(
         },
         table=table_pub,
         tickets=ticket_store,
+        leader=leader,
     )
 
     @asynccontextmanager

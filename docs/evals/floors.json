@@ -1,0 +1,14 @@
+{
+  "min_order_count": 7,
+  "by_head": {
+    "cancelled_offline": { "min_precision": 1.0, "min_recall": 1.0 },
+    "selective_theft": { "min_precision": 1.0, "min_recall": 1.0 }
+  },
+  "beats_always_precision": {
+    "cancelled_offline": true,
+    "selective_theft": true
+  },
+  "pattern_cohort": {
+    "selective_theft": { "min_precision": 1.0 }
+  }
+}

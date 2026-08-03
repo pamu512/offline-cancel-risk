@@ -68,6 +68,14 @@ Labeled backtest smoke:
 python scripts/backtest.py
 ```
 
+Holdout eval (CI floors — pattern precision vs naive baselines):
+
+```bash
+python scripts/eval_holdout.py --check-floors
+```
+
+Shared assessments store (multi-replica): set `OCR_DATABASE_URL=postgresql://…` and `pip install -e ".[pg]"`; default remains SQLite.
+
 ## Docs map
 
 | Doc | Contents |

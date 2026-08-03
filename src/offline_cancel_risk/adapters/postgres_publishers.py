@@ -1,34 +1,29 @@
+"""Postgres AssessmentStore — shared idempotency for multi-replica assess."""
+
 from __future__ import annotations
 
 import json
-import sqlite3
 from datetime import datetime, timezone
-from pathlib import Path
 from typing import Any
 
 from offline_cancel_risk.api.schemas import AssessmentResult
-from offline_cancel_risk.ports import AssessmentStore, StreamPublisher
-from offline_cancel_risk.settings import get_settings
-
-# Backward-compatible alias — prefer AssessmentStore / ports.AssessmentStore.
-TablePublisher = AssessmentStore
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS assessments (
-  order_display_id TEXT,
-  policy_hash TEXT,
-  model_version TEXT,
-  assessment_generation INTEGER,
+  order_display_id TEXT NOT NULL,
+  policy_hash TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  assessment_generation INTEGER NOT NULL,
   payload_json TEXT NOT NULL,
   assessed_at TEXT NOT NULL,
   PRIMARY KEY (order_display_id, policy_hash, model_version, assessment_generation)
 );
 CREATE TABLE IF NOT EXISTS ledger (
-  id INTEGER PRIMARY KEY AUTOINCREMENT,
-  order_display_id TEXT,
-  policy_hash TEXT,
-  model_version TEXT,
-  assessment_generation INTEGER,
+  id BIGSERIAL PRIMARY KEY,
+  order_display_id TEXT NOT NULL,
+  policy_hash TEXT NOT NULL,
+  model_version TEXT NOT NULL,
+  assessment_generation INTEGER NOT NULL,
   payload_json TEXT NOT NULL,
   written_at TEXT NOT NULL
 );
@@ -40,29 +35,31 @@ CREATE TABLE IF NOT EXISTS feedback (
 """
 
 
-class JsonlStreamPublisher:
-    def __init__(self, stream_path: str | Path | None = None) -> None:
-        self._path = Path(stream_path if stream_path is not None else get_settings().stream_path)
+class PostgresTablePublisher:
+    """AssessmentStore backed by Postgres (psycopg3)."""
 
-    def publish(self, result: AssessmentResult) -> None:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        with self._path.open("a", encoding="utf-8") as f:
-            f.write(result.model_dump_json())
-            f.write("\n")
-
-
-class SqliteTablePublisher:
-    def __init__(self, sqlite_path: str | Path | None = None) -> None:
-        self._path = Path(sqlite_path if sqlite_path is not None else get_settings().sqlite_path)
+    def __init__(self, database_url: str) -> None:
+        if not (database_url or "").strip():
+            raise ValueError("database_url required")
+        try:
+            import psycopg  # noqa: F401
+        except ImportError as exc:  # pragma: no cover - env dependent
+            raise ImportError(
+                "Postgres assessments require psycopg. Install with: "
+                'pip install -e ".[pg]"'
+            ) from exc
+        self._url = database_url.strip()
         self._ensure_schema()
 
-    def _connect(self) -> sqlite3.Connection:
-        self._path.parent.mkdir(parents=True, exist_ok=True)
-        return sqlite3.connect(self._path)
+    def _connect(self):  # type: ignore[no-untyped-def]
+        import psycopg
+
+        return psycopg.connect(self._url)
 
     def _ensure_schema(self) -> None:
         with self._connect() as conn:
-            conn.executescript(_SCHEMA)
+            conn.execute(_SCHEMA)
+            conn.commit()
 
     def upsert(self, result: AssessmentResult) -> None:
         payload = result.model_dump_json()
@@ -79,11 +76,11 @@ class SqliteTablePublisher:
                 INSERT INTO assessments (
                   order_display_id, policy_hash, model_version, assessment_generation,
                   payload_json, assessed_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
-                ON CONFLICT(order_display_id, policy_hash, model_version, assessment_generation)
+                ) VALUES (%s, %s, %s, %s, %s, %s)
+                ON CONFLICT (order_display_id, policy_hash, model_version, assessment_generation)
                 DO UPDATE SET
-                  payload_json = excluded.payload_json,
-                  assessed_at = excluded.assessed_at
+                  payload_json = EXCLUDED.payload_json,
+                  assessed_at = EXCLUDED.assessed_at
                 """,
                 (*key, payload, result.assessed_at),
             )
@@ -92,7 +89,7 @@ class SqliteTablePublisher:
                 INSERT INTO ledger (
                   order_display_id, policy_hash, model_version, assessment_generation,
                   payload_json, written_at
-                ) VALUES (?, ?, ?, ?, ?, ?)
+                ) VALUES (%s, %s, %s, %s, %s, %s)
                 """,
                 (*key, payload, written_at),
             )
@@ -109,8 +106,8 @@ class SqliteTablePublisher:
             row = conn.execute(
                 """
                 SELECT payload_json FROM assessments
-                WHERE order_display_id = ? AND policy_hash = ? AND model_version = ?
-                  AND assessment_generation = ?
+                WHERE order_display_id = %s AND policy_hash = %s AND model_version = %s
+                  AND assessment_generation = %s
                 """,
                 (order_display_id, policy_hash, model_version, generation),
             ).fetchone()
@@ -123,7 +120,7 @@ class SqliteTablePublisher:
             row = conn.execute(
                 """
                 SELECT payload_json FROM assessments
-                WHERE order_display_id = ?
+                WHERE order_display_id = %s
                 ORDER BY assessment_generation DESC
                 LIMIT 1
                 """,
@@ -142,7 +139,6 @@ class SqliteTablePublisher:
     def mark_prior_provisional(
         self, order_display_id: str, *, before_generation: int
     ) -> int:
-        """Flip provisional=true on generations strictly below before_generation."""
         updated = 0
         for result in self.list_generations(order_display_id):
             if result.assessment_generation >= before_generation:
@@ -159,7 +155,7 @@ class SqliteTablePublisher:
             rows = conn.execute(
                 """
                 SELECT payload_json FROM assessments
-                WHERE order_display_id = ?
+                WHERE order_display_id = %s
                 ORDER BY assessment_generation ASC
                 """,
                 (order_display_id,),
@@ -172,10 +168,10 @@ class SqliteTablePublisher:
             conn.execute(
                 """
                 INSERT INTO feedback (order_display_id, labels, created_at)
-                VALUES (?, ?, ?)
-                ON CONFLICT(order_display_id) DO UPDATE SET
-                  labels = excluded.labels,
-                  created_at = excluded.created_at
+                VALUES (%s, %s, %s)
+                ON CONFLICT (order_display_id) DO UPDATE SET
+                  labels = EXCLUDED.labels,
+                  created_at = EXCLUDED.created_at
                 """,
                 (order_display_id, json.dumps(labels), created_at),
             )

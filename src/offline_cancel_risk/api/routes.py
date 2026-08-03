@@ -128,11 +128,13 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
 
 @router.post("/assess")
 async def assess(body: AssessRequest, request: Request) -> dict[str, str]:
+    _require_auth(request)
     return await _enqueue_one(request, body)
 
 
 @router.post("/assess:batch")
 async def assess_batch(body: AssessBatchRequest, request: Request) -> dict[str, list[str]]:
+    _require_auth(request)
     job_ids: list[str] = []
     for order in body.orders:
         result = await _enqueue_one(request, order)
@@ -142,6 +144,7 @@ async def assess_batch(body: AssessBatchRequest, request: Request) -> dict[str, 
 
 @router.get("/assess/{job_id}", response_model=JobResponse)
 async def get_job(job_id: str, request: Request) -> JobResponse:
+    _require_auth(request)
     job = request.app.state.queue.get(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail="job not found")
@@ -155,6 +158,7 @@ async def get_job(job_id: str, request: Request) -> JobResponse:
 
 @router.get("/orders/{order_display_id}/latest", response_model=AssessmentResult)
 async def get_latest(order_display_id: str, request: Request) -> AssessmentResult:
+    _require_auth(request)
     result = request.app.state.table.latest(order_display_id)
     if result is None:
         raise HTTPException(status_code=404, detail="order not found")
@@ -168,11 +172,13 @@ async def get_latest(order_display_id: str, request: Request) -> AssessmentResul
 async def get_generations(
     order_display_id: str, request: Request
 ) -> list[AssessmentResult]:
+    _require_auth(request)
     return request.app.state.table.list_generations(order_display_id)
 
 
 @router.post("/feedback")
 async def feedback_upsert(body: FeedbackRequest, request: Request) -> dict[str, Any]:
+    _require_auth(request)
     request.app.state.table.upsert_feedback(body.order_display_id, body.labels)
     closed = 0
     tickets = getattr(request.app.state, "tickets", None)

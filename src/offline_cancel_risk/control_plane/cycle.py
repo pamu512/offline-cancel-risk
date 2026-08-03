@@ -4,7 +4,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from offline_cancel_risk.adapters.publishers import SqliteTablePublisher
+from offline_cancel_risk.ports import AssessmentStore
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
@@ -18,7 +18,7 @@ from offline_cancel_risk.policy.service import resolved_policy_for_market
 from offline_cancel_risk.settings import Settings
 
 
-def assessments_as_dicts(table: SqliteTablePublisher) -> list[dict[str, Any]]:
+def assessments_as_dicts(table: AssessmentStore) -> list[dict[str, Any]]:
     return [
         {
             "order_display_id": r.order_display_id,
@@ -61,7 +61,7 @@ def run_metrics_and_tune(
     hardgates: EnforcementHardgateStore,
     label_metrics: LabelMetricsStore,
     op_cfg: dict[str, Any],
-    table: SqliteTablePublisher,
+    table: AssessmentStore,
     region_code: str,
     city_code: str = "",
     reason: str = "tuning_run",

@@ -15,6 +15,8 @@ class Settings(BaseSettings):
     policy_overlays_path: str = str(ROOT / "data" / "policy_overlays.db")
     promote_gates_path: str = str(ROOT / "config" / "promote_gates.default.yaml")
     sqlite_path: str = str(ROOT / "data" / "assessments.db")
+    # When set (postgresql://...), assessments/feedback use Postgres instead of sqlite_path.
+    database_url: str = ""
     stream_path: str = str(ROOT / "data" / "risk_events.jsonl")
     models_sqlite_path: str = str(ROOT / "data" / "models.db")
     models_root: str = str(ROOT / "data" / "models")
@@ -42,12 +44,31 @@ class Settings(BaseSettings):
     gps_base_url: str = ""  # empty by default; tenants set OCR_GPS_BASE_URL
     gps_api_key: str = ""
     sync_assess: bool = False
+    # demo = auth optional; prod forces auth_required and requires api_keys
+    profile: str = "demo"
     auth_required: bool = False
     api_keys: str = ""  # comma-separated when auth_required
+    # memory = in-process asyncio; sqlite = durable multi-worker claim queue
+    queue_backend: str = "memory"
+    assess_queue_path: str = str(ROOT / "data" / "assess_queue.db")
+    # empty → sibling of control_plane_sqlite_path (*.lock)
+    control_plane_lock_path: str = ""
+
+
+def apply_profile(settings: Settings) -> Settings:
+    """Prod profile forces auth on and refuses empty API keys."""
+    if settings.profile.strip().lower() != "prod":
+        return settings
+    if not settings.api_keys.strip():
+        raise RuntimeError("OCR_PROFILE=prod requires OCR_API_KEYS")
+    if settings.auth_required:
+        return settings
+    return settings.model_copy(update={"auth_required": True})
+
 
 @lru_cache
 def get_settings() -> Settings:
-    return Settings()
+    return apply_profile(Settings())
 
 def load_policy(path: Path | str) -> dict:
     with open(path, "r", encoding="utf-8") as f:
