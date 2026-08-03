@@ -109,6 +109,9 @@ thresholds:
   cancel_abuse: 0.75
   selective_theft: 0.75
 ear:
+  mode: shadow
+  outcome_ewma_alpha: 0.05
+  min_updates_apply: 5
   recoverability:
     cancelled_offline: 1.0
     cancel_abuse: 0.4

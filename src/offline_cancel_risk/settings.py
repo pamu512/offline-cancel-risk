@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     device_graph_path: str = str(ROOT / "data" / "device_graph.db")
     chat_signals_path: str = str(ROOT / "data" / "chat_signals.db")
     entity_anomaly_path: str = str(ROOT / "data" / "entity_anomaly.db")
+    outcomes_path: str = str(ROOT / "data" / "outcomes.db")
     operating_point_path: str = str(
         ROOT / "config" / "operating_point.default.yaml"
     )
