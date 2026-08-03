@@ -21,6 +21,7 @@ from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 
@@ -74,6 +75,7 @@ class AssessJobQueue:
         device_graph: DeviceGraphStore | None = None,
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
+        outcomes: OutcomeStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -101,6 +103,7 @@ class AssessJobQueue:
                 device_graph=device_graph,
                 chat_store=chat_store,
                 anomalies=anomalies,
+                outcomes=outcomes,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -129,6 +132,7 @@ class AssessJobQueue:
         device_graph: DeviceGraphStore | None = None,
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
+        outcomes: OutcomeStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -153,6 +157,7 @@ class AssessJobQueue:
                     device_graph=device_graph,
                     chat_store=chat_store,
                     anomalies=anomalies,
+                    outcomes=outcomes,
                 )
             finally:
                 self._queue.task_done()

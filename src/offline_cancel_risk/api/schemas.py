@@ -1,6 +1,16 @@
 from pydantic import BaseModel, Field
 
 
+class OutcomeIngestRequest(BaseModel):
+    order_display_id: str
+    outcome: str
+    amount: float | None = None
+    head: str | None = None
+    region_code: str | None = None
+    city_code: str | None = None
+    occurred_at: str | None = None
+
+
 class AssessRequest(BaseModel):
     order_display_id: str
     driver_id: int

@@ -5,7 +5,7 @@ from typing import Any
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
+from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult, OutcomeIngestRequest
 from offline_cancel_risk.control_plane.cycle import run_metrics_and_tune
 from offline_cancel_risk.features.chat_signals import (
     instant_chat_risk,
@@ -117,6 +117,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             device_graph=getattr(request.app.state, "device_graph", None),
             chat_store=getattr(request.app.state, "chat_store", None),
             anomalies=getattr(request.app.state, "anomalies", None),
+            outcomes=getattr(request.app.state, "outcomes", None),
         )
     else:
         queue.schedule(job_id)
@@ -256,6 +257,98 @@ def _require_auth(request: Request) -> None:
         token = request.headers.get("x-api-key", "").strip()
     if not keys or token not in keys:
         raise HTTPException(status_code=401, detail="unauthorized")
+
+
+_HEADS = ("cancelled_offline", "cancel_abuse", "selective_theft")
+
+
+def _infer_head_from_assessment(result: AssessmentResult) -> str:
+    flags = result.flags.model_dump()
+    scores = result.scores.model_dump()
+    flagged = [h for h in _HEADS if flags.get(h) == 1]
+    pool = flagged if flagged else list(_HEADS)
+    return max(pool, key=lambda h: float(scores[h]))
+
+
+@router.post("/outcomes")
+async def ingest_outcome(
+    body: OutcomeIngestRequest, request: Request
+) -> dict[str, Any]:
+    _require_auth(request)
+    store = getattr(request.app.state, "outcomes", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="outcomes unavailable")
+
+    policy = request.app.state.policy
+    ear = policy.get("ear") or {}
+    cold_start = {
+        k: float(v) for k, v in (ear.get("recoverability") or {}).items()
+    }
+    alpha = float(ear.get("outcome_ewma_alpha", 0.05))
+    guardrails = request.app.state.guardrails.get(
+        "bounds", request.app.state.guardrails
+    )
+
+    region = body.region_code
+    city = body.city_code
+    head = body.head
+
+    if head is None or region is None or city is None:
+        latest = request.app.state.table.latest(body.order_display_id)
+        if latest is None:
+            raise HTTPException(status_code=404, detail="order not found")
+        if head is None:
+            head = _infer_head_from_assessment(latest)
+        if region is None:
+            region = latest.region_code or ""
+        if city is None:
+            city = latest.city_code or ""
+
+    try:
+        return store.record_outcome(
+            order_display_id=body.order_display_id,
+            outcome=body.outcome,
+            head=head,
+            region_code=region,
+            city_code=city,
+            amount=body.amount,
+            occurred_at=body.occurred_at,
+            alpha=alpha,
+            cold_start=cold_start,
+            guardrails=guardrails,
+        )
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc)) from exc
+
+
+@router.get("/outcomes/recoverability")
+async def get_outcome_recoverability(
+    request: Request,
+    region_code: str = "",
+    city_code: str = "",
+) -> dict[str, Any]:
+    _require_auth(request)
+    store = getattr(request.app.state, "outcomes", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="outcomes unavailable")
+    return {
+        "region_code": region_code.strip().upper(),
+        "city_code": city_code.strip().upper(),
+        "heads": store.get_recoverability(region_code, city_code),
+    }
+
+
+@router.get("/outcomes")
+async def list_outcomes(
+    request: Request,
+    order_display_id: str | None = None,
+    limit: int = 100,
+) -> list[dict[str, Any]]:
+    _require_auth(request)
+    store = getattr(request.app.state, "outcomes", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="outcomes unavailable")
+    return store.list_outcomes(order_display_id=order_display_id, limit=limit)
 
 
 @router.get("/models")

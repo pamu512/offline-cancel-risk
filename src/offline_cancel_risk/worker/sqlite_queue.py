@@ -25,6 +25,7 @@ from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 from offline_cancel_risk.worker.queue import AssessJob
@@ -175,6 +176,7 @@ class SqliteAssessJobQueue:
         device_graph: DeviceGraphStore | None = None,
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
+        outcomes: OutcomeStore | None = None,
     ) -> AssessJob:
         job = self.get(job_id)
         if job is None:
@@ -204,6 +206,7 @@ class SqliteAssessJobQueue:
                 device_graph=device_graph,
                 chat_store=chat_store,
                 anomalies=anomalies,
+                outcomes=outcomes,
             )
             job.status = "done"
             job.error = None
@@ -234,6 +237,7 @@ class SqliteAssessJobQueue:
         device_graph: DeviceGraphStore | None = None,
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
+        outcomes: OutcomeStore | None = None,
     ) -> None:
         while True:
             job_id = self._claim_next()
@@ -260,4 +264,5 @@ class SqliteAssessJobQueue:
                 device_graph=device_graph,
                 chat_store=chat_store,
                 anomalies=anomalies,
+                outcomes=outcomes,
             )

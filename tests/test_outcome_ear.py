@@ -2,16 +2,18 @@ from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
+from httpx import ASGITransport, AsyncClient
 
 from offline_cancel_risk.adapters.gps import FakeGpsClient
 from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest
 from offline_cancel_risk.domain.models import GpsPoint
+from offline_cancel_risk.main import create_app
 from offline_cancel_risk.outcomes.ewma import ewma_update, signal_for_outcome
 from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.scoring.ear import resolve_recoverability
-from offline_cancel_risk.settings import load_policy
+from offline_cancel_risk.settings import Settings, load_policy
 
 PICKUP = (14.5500, 121.0200)
 DEST = (14.6500, 121.0800)
@@ -207,3 +209,64 @@ async def test_apply_shifts_ear_after_enough_won_outcomes(tmp_path):
         > static_result.expected_revenue_at_risk.selective_theft
     )
     assert apply_result.attention_score > static_result.attention_score
+
+
+def _api_settings(tmp_path: Path) -> Settings:
+    return Settings(
+        sync_assess=True,
+        sqlite_path=str(tmp_path / "assessments.db"),
+        stream_path=str(tmp_path / "risk_events.jsonl"),
+        outcomes_path=str(tmp_path / "outcomes.db"),
+        policy_path=str(Path("config/policy.default.yaml").resolve()),
+        policy_guardrails_path=str(
+            Path("config/policy_guardrails.default.yaml").resolve()
+        ),
+    )
+
+
+@pytest.mark.asyncio
+async def test_outcomes_api_ingest_and_recoverability(tmp_path: Path):
+    order_id = "API-OUTCOME-1"
+    app = create_app(
+        gps_client=FakeGpsClient(_pickup_cluster()),
+        settings=_api_settings(tmp_path),
+    )
+    async with AsyncClient(
+        transport=ASGITransport(app=app), base_url="http://test"
+    ) as ac:
+        assess = await ac.post("/v1/assess", json=_theft_req(order_id).model_dump())
+        assert assess.status_code == 200
+
+        ingest = await ac.post(
+            "/v1/outcomes",
+            json={
+                "order_display_id": order_id,
+                "outcome": "clawback_won",
+                "occurred_at": "2024-01-02T00:00:00Z",
+            },
+        )
+        assert ingest.status_code == 200
+        body = ingest.json()
+        assert body["ok"] is True
+        assert body["head"] == "selective_theft"
+        assert body["region_code"] == "PH"
+        assert body["city_code"] == "MNL"
+        assert body["n_updates"] == 1
+
+        rec = await ac.get(
+            "/v1/outcomes/recoverability",
+            params={"region_code": "PH", "city_code": "MNL"},
+        )
+        assert rec.status_code == 200
+        heads = rec.json()["heads"]
+        assert heads["selective_theft"]["n_updates"] == 1
+
+        listed = await ac.get(
+            "/v1/outcomes",
+            params={"order_display_id": order_id},
+        )
+        assert listed.status_code == 200
+        rows = listed.json()
+        assert len(rows) == 1
+        assert rows[0]["outcome"] == "clawback_won"
+        assert rows[0]["head"] == "selective_theft"

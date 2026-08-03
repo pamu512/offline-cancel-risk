@@ -28,6 +28,7 @@ from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
+from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
@@ -79,6 +80,7 @@ def create_app(
     device_graph_store = DeviceGraphStore(settings.device_graph_path)
     chat_store = ChatSignalStore(settings.chat_signals_path)
     anomaly_store = EntityAnomalyStore(settings.entity_anomaly_path)
+    outcome_store = OutcomeStore(settings.outcomes_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -135,6 +137,7 @@ def create_app(
                     device_graph=device_graph_store,
                     chat_store=chat_store,
                     anomalies=anomaly_store,
+                    outcomes=outcome_store,
                 )
             )
         control_loop.start()
@@ -170,6 +173,7 @@ def create_app(
     app.state.device_graph = device_graph_store
     app.state.chat_store = chat_store
     app.state.anomalies = anomaly_store
+    app.state.outcomes = outcome_store
     app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue
