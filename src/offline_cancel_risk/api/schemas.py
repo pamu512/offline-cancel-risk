@@ -25,6 +25,14 @@ class AssessRequest(BaseModel):
     region_code: str | None = None
     # Optional Downstream device-intel ingest (spoof/root/risk_score).
     device_risk: dict[str, bool | float | str] | None = None
+    # Marketplace funnel (slice 1). accepted_at defaults to assign_ts in assess.
+    accepted_at: str | None = None
+    cancel_reason_code: str | None = None
+    cancel_with_cause: bool | None = None
+    # Extra accept/complete/cancel rows for the same driver (window fill).
+    marketplace_events: list[dict] = Field(default_factory=list)
+    # Downstream chat/force-cancel flags (no NLP here). See POST /v1/chat-signals.
+    chat_signals: dict[str, bool | float | str] | None = None
     # When true: bump assessment_generation and mark prior generations provisional.
     force_reassess: bool = False
 

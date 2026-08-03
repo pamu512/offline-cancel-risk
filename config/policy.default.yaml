@@ -16,6 +16,8 @@ sequence:
   stop_match_radius_m: 150
   # Weight of sequence_score in cancelled_offline rule blend (vs stop/dwell).
   offline_weight: 1.5
+  # When path is incomplete, require this fraction of middle stops between pickup→drop.
+  min_middle_fraction: 1.0
 gps:
   min_window_h: 3
   max_window_h: 24
@@ -40,12 +42,49 @@ abuse:
   wrong_direction_bonus: 0.25
   cancel_rate_min_count: 4
   cancel_rate_threshold: 2.0
-  cancel_rate_bonus: 0.2
+  cancel_rate_bonus: 0.15
+  # Marketplace funnel (slice 1) — ratios beat cancels/hour for abuse.
+  marketplace_min_support: 5
+  accept_cancel_rate_threshold: 0.45
+  accept_cancel_rate_bonus: 0.25
+  completion_rate_floor: 0.40
+  low_completion_rate_bonus: 0.20
+  with_cause_fraction_floor: 0.35
+  without_cause_bonus: 0.20
   pair_cancel_min: 3
   pair_density_bonus: 0.2
-  device_risk_score_threshold: 0.7
-  device_risk_bonus: 0.15
-  device_rooted_bonus: 0.1
+  multi_account_device_bonus: 0.25
+  multi_user_device_bonus: 0.20
+  device_hopping_bonus: 0.20
+  shared_device_pair_bonus: 0.25
+device_integrity:
+  ewma_alpha: 0.4
+  risk_threshold: 0.7
+  abuse_bonus_scale: 0.35
+  gps_dampen: 0.5
+device_graph:
+  window_days: 30
+  min_support: 3
+  max_drivers_per_device: 3
+  max_users_per_device: 3
+  max_devices_per_driver: 4
+  shared_pair_min_sightings: 1
+chat_signals:
+  risk_threshold: 0.55
+  abuse_bonus_scale: 0.40
+  stall_combo_bonus: 0.15
+  repeat_min_count: 3
+  repeat_bonus: 0.20
+  window_minutes: 10080  # 7d
+anomaly:
+  mode: shadow  # shadow | apply | off
+  window_n: 20
+  peer_window_n: 200
+  min_support: 8
+  z_threshold: 3.0
+  epsilon: 0.001
+  abuse_bonus: 0.15
+  features: [accept_cancel_rate, cancel_rate, cancel_abuse]
 stages:
   merchant_radius_m: 150
   dropoff_radius_m: 400

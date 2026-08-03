@@ -11,6 +11,10 @@ from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, Sqlite
 from offline_cancel_risk.api.routes import router
 from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
+from offline_cancel_risk.features.anomaly import EntityAnomalyStore
+from offline_cancel_risk.features.chat_signals import ChatSignalStore
+from offline_cancel_risk.features.device_graph import DeviceGraphStore
+from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
@@ -67,6 +71,10 @@ def create_app(
     chain_store = DriverChainStore(settings.driver_chains_path)
     baseline_store = EntityBaselineStore(settings.entity_baselines_path)
     cancel_stats_store = EntityCancelStatsStore(settings.entity_cancel_stats_path)
+    device_store = DeviceIntegrityStore(settings.device_integrity_path)
+    device_graph_store = DeviceGraphStore(settings.device_graph_path)
+    chat_store = ChatSignalStore(settings.chat_signals_path)
+    anomaly_store = EntityAnomalyStore(settings.entity_anomaly_path)
     reg = registry or ModelRegistry(settings.models_sqlite_path, settings.models_root)
     metrics = shadow_metrics or ShadowMetricsStore(settings.shadow_metrics_path)
     canary_ctrl = canary or CanaryController(
@@ -114,6 +122,10 @@ def create_app(
                     driver_chains=chain_store,
                     baselines=baseline_store,
                     cancel_stats=cancel_stats_store,
+                    devices=device_store,
+                    device_graph=device_graph_store,
+                    chat_store=chat_store,
+                    anomalies=anomaly_store,
                 )
             )
         control_loop.start()
@@ -145,6 +157,10 @@ def create_app(
     app.state.driver_chains = chain_store
     app.state.baselines = baseline_store
     app.state.cancel_stats = cancel_stats_store
+    app.state.devices = device_store
+    app.state.device_graph = device_graph_store
+    app.state.chat_store = chat_store
+    app.state.anomalies = anomaly_store
     app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue

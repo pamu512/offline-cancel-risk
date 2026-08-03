@@ -19,6 +19,20 @@ from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.abuse import abuse_feature_score
 from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
+from offline_cancel_risk.features.anomaly import (
+    EntityAnomalyStore,
+    cohort_key,
+    evaluate_entity_anomaly,
+)
+from offline_cancel_risk.features.chat_signals import (
+    ChatSignalStore,
+    evaluate_chat_signals,
+    merge_chat_signals,
+    normalize_chat_signals,
+)
+from offline_cancel_risk.features.device_graph import DeviceGraphStore
+from offline_cancel_risk.features.device_integrity import evaluate_device_integrity
+from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.dwell import dwell_stop_mask
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
@@ -34,7 +48,7 @@ from offline_cancel_risk.features.replacement import (
     compute_route_similarity,
     evaluate_replacement,
 )
-from offline_cancel_risk.features.sequence import sequence_match_score
+from offline_cancel_risk.features.sequence import resolve_sequence_with_pickup_drop
 from offline_cancel_risk.features.stages import cancel_after_pickup, resolve_cancel_stage
 from offline_cancel_risk.features.theft import theft_feature_score
 from offline_cancel_risk.feedback.sampler import safe_inline_sample
@@ -119,6 +133,10 @@ async def assess_order(
     driver_chains: DriverChainStore | None = None,
     baselines: EntityBaselineStore | None = None,
     cancel_stats: EntityCancelStatsStore | None = None,
+    devices: DeviceIntegrityStore | None = None,
+    device_graph: DeviceGraphStore | None = None,
+    chat_store: ChatSignalStore | None = None,
+    anomalies: EntityAnomalyStore | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
         policy = resolved_policy_for_market(
@@ -204,12 +222,52 @@ async def assess_order(
     dwell_fraction = (
         sum(1 for m in dwell_masks if m) / len(stops) if stops else 0.0
     )
-    sequence_score = sequence_match_score(
-        window.points, stops, policy["sequence"]
+    sequence_score, sequence_reasons, pickup_drop_meta = (
+        resolve_sequence_with_pickup_drop(
+            window.points,
+            stops,
+            policy["sequence"],
+            stages_policy=policy.get("stages") or {},
+        )
     )
 
     integrity = analyze_gps_integrity(window.points, policy=policy)
     final_stop_confidence = dampen_stop_confidence(final_stop_confidence, integrity)
+
+    prev_device_ewma = None
+    if devices is not None and req.device_id:
+        prev_row = devices.get(str(req.device_id))
+        if prev_row is not None:
+            prev_device_ewma = float(prev_row["ewma_risk"])
+    device_eval = evaluate_device_integrity(
+        req.device_risk,
+        prev_ewma=prev_device_ewma,
+        policy=policy,
+    )
+    if device_eval["gps_multiplier"] < 1.0:
+        final_stop_confidence = max(
+            0.0,
+            min(
+                1.0,
+                float(final_stop_confidence) * float(device_eval["gps_multiplier"]),
+            ),
+        )
+    if devices is not None and req.device_id and (
+        req.device_risk or device_eval["instant_risk"] > 0 or prev_device_ewma is not None
+    ):
+        try:
+            devices.upsert(
+                device_id=str(req.device_id),
+                ewma_risk=float(device_eval["ewma_risk"]),
+                instant_risk=float(device_eval["instant_risk"]),
+                flags=dict(device_eval.get("normalized") or {}),
+                driver_id=int(req.driver_id),
+                user_id=req.user_id,
+            )
+        except Exception:
+            _LOG.exception(
+                "Device integrity persist failed device=%s", req.device_id
+            )
 
     conf_threshold = float(policy["dbscan"]["confidence_threshold"])
     last_conf = confidence_list[-1] if confidence_list else 0.0
@@ -234,7 +292,10 @@ async def assess_order(
     lineage_id = build_lineage_id(req.order_display_id, req.reassign_cancel_events)
 
     stage, stage_meta = resolve_cancel_stage(window.points, stops, policy=policy)
+    stage_meta = {**pickup_drop_meta, **stage_meta}
     after_pickup = cancel_after_pickup(stage)
+    if pickup_drop_meta.get("drop_before_pickup"):
+        after_pickup = False
     pickup_target = stops[0] if stops else (0.0, 0.0)
     progress = (
         analyze_progress(
@@ -279,13 +340,20 @@ async def assess_order(
     cancel_rate = None
     driver_cancel_count = 0
     pair_cancel_count = 0
+    marketplace_signals: list[str] = []
+    marketplace_meta: dict[str, Any] = {}
     if cancel_stats is not None:
         try:
-            cancel_stats.record_cancel(
+            accept_ts = req.accepted_at or req.assign_ts
+            cancel_stats.record_assess_funnel(
                 driver_id=int(req.driver_id),
                 user_id=req.user_id,
                 order_display_id=req.order_display_id,
-                event_ts=req.cancel_ts,
+                accept_ts=accept_ts,
+                cancel_ts=req.cancel_ts,
+                cancel_with_cause=req.cancel_with_cause,
+                cancel_reason_code=req.cancel_reason_code,
+                extra_events=list(req.marketplace_events or []),
             )
             st = cancel_stats.stats(
                 driver_id=int(req.driver_id),
@@ -293,16 +361,111 @@ async def assess_order(
                 as_of=req.cancel_ts,
                 window_minutes=stats_window,
                 exclude_order_id=req.order_display_id,
+                abuse_policy=policy.get("abuse") or {},
             )
             driver_cancel_count = int(st["driver_cancel_count"])
             cancel_rate = float(st["driver_cancel_rate"])
             pair_cancel_count = int(st["pair_cancel_count"])
+            marketplace_signals = list(st.get("signals") or [])
+            marketplace_meta = {
+                "accept_cancel_rate": st.get("accept_cancel_rate"),
+                "completion_rate": st.get("completion_rate"),
+                "with_cause_fraction": st.get("with_cause_fraction"),
+                "accepts": st.get("accepts"),
+                "cancels": st.get("cancels"),
+                "completes": st.get("completes"),
+            }
         except Exception:
             _LOG.exception(
                 "Entity cancel stats failed for order=%s", req.order_display_id
             )
 
-    device_risk = dict(req.device_risk or {}) if req.device_risk else {}
+    graph_meta: dict[str, Any] = {}
+    device_graph_signals: list[str] = []
+    if device_graph is not None and req.device_id:
+        try:
+            # Assess device_id is the courier device; user↔device edges come from
+            # POST /v1/device-graph/edges (avoids shared_device_pair on every trip).
+            device_graph.observe(
+                device_id=str(req.device_id),
+                driver_id=int(req.driver_id),
+                user_id=None,
+                event_ts=req.cancel_ts,
+            )
+            graph_meta = device_graph.evaluate(
+                device_id=str(req.device_id),
+                driver_id=int(req.driver_id),
+                user_id=int(req.user_id) if req.user_id is not None else None,
+                as_of=req.cancel_ts,
+                policy=policy,
+            )
+            device_graph_signals = list(graph_meta.get("signals") or [])
+        except Exception:
+            _LOG.exception(
+                "Device graph failed for order=%s device=%s",
+                req.order_display_id,
+                req.device_id,
+            )
+
+    chat_cfg = policy.get("chat_signals") or {}
+    stored_chat = None
+    if chat_store is not None:
+        try:
+            stored_chat = chat_store.get(req.order_display_id)
+        except Exception:
+            _LOG.exception(
+                "Chat signal lookup failed order=%s", req.order_display_id
+            )
+    merged_chat = merge_chat_signals(
+        stored_chat.get("flags") if stored_chat else None,
+        req.chat_signals,
+    )
+    driver_chat_n = 0
+    if chat_store is not None:
+        try:
+            driver_chat_n = chat_store.driver_signal_count(
+                int(req.driver_id),
+                as_of=req.cancel_ts,
+                window_minutes=int(chat_cfg.get("window_minutes", 10080)),
+                min_risk=float(chat_cfg.get("risk_threshold", 0.55)),
+            )
+        except Exception:
+            _LOG.exception(
+                "Chat driver count failed driver=%s", req.driver_id
+            )
+    chat_eval = evaluate_chat_signals(
+        merged_chat,
+        driver_signal_count=driver_chat_n,
+        no_progress=bool(progress.get("no_progress")),
+        wrong_direction=bool(progress.get("wrong_direction")),
+        policy=policy,
+    )
+    if chat_store is not None and (
+        req.chat_signals
+        or chat_eval["fires"]
+        or any(
+            merged_chat.get(k)
+            for k in (
+                "persuasion_suspected",
+                "cash_offline_suggested",
+                "rider_forced_cancel",
+            )
+        )
+        or merged_chat.get("signal_score") is not None
+    ):
+        try:
+            chat_store.upsert(
+                order_display_id=req.order_display_id,
+                driver_id=int(req.driver_id),
+                user_id=req.user_id,
+                flags=normalize_chat_signals(merged_chat),
+                risk=float(chat_eval["risk"]),
+                event_ts=req.cancel_ts,
+            )
+        except Exception:
+            _LOG.exception(
+                "Chat signal persist failed order=%s", req.order_display_id
+            )
 
     abuse_score, abuse_reasons = abuse_feature_score(
         {
@@ -316,10 +479,57 @@ async def assess_order(
             "driver_cancel_count": driver_cancel_count,
             "driver_cancel_rate": cancel_rate or 0.0,
             "pair_cancel_count": pair_cancel_count,
-            "device_risk": device_risk,
+            "marketplace_signals": marketplace_signals,
+            "device_eval": device_eval,
+            "device_graph_signals": device_graph_signals,
+            "chat_eval": chat_eval,
         },
         policy["abuse"],
     )
+
+    anomaly_eval: dict[str, Any] = {
+        "mode": "off",
+        "fires": False,
+        "signals": [],
+        "details": [],
+        "abuse_bonus": 0.0,
+        "reasons": [],
+    }
+    if anomalies is not None:
+        try:
+            feat_vals: dict[str, float] = {"cancel_abuse": float(abuse_score)}
+            if cancel_rate is not None:
+                feat_vals["cancel_rate"] = float(cancel_rate)
+            acr = marketplace_meta.get("accept_cancel_rate")
+            if acr is not None and int(marketplace_meta.get("accepts") or 0) >= 1:
+                feat_vals["accept_cancel_rate"] = float(acr)
+            anomaly_eval = evaluate_entity_anomaly(
+                store=anomalies,
+                entity_key=f"driver:{int(req.driver_id)}",
+                cohort=cohort_key(
+                    city_code=req.city_code, region_code=req.region_code
+                ),
+                features=feat_vals,
+                order_display_id=req.order_display_id,
+                event_ts=req.cancel_ts,
+                policy=policy,
+            )
+            if anomaly_eval.get("abuse_bonus"):
+                abuse_score = min(
+                    1.0, float(abuse_score) + float(anomaly_eval["abuse_bonus"])
+                )
+                for r in anomaly_eval.get("signals") or []:
+                    if r not in abuse_reasons:
+                        abuse_reasons.append(str(r))
+            elif anomaly_eval.get("reasons"):
+                for r in anomaly_eval["reasons"]:
+                    if r not in abuse_reasons:
+                        abuse_reasons.append(str(r))
+        except Exception:
+            _LOG.exception(
+                "Entity anomaly failed for order=%s", req.order_display_id
+            )
+
     theft_score, theft_reasons = theft_feature_score(
         {
             "category": req.category,
@@ -346,6 +556,7 @@ async def assess_order(
     rule_scores, reasons = compute_rule_scores(features, policy)
     reasons = [
         *reasons,
+        *sequence_reasons,
         *list(integrity.get("reasons") or []),
         *list(progress.get("reasons") or []),
         f"stage:{stage}",
@@ -368,6 +579,11 @@ async def assess_order(
         abuse_reasons=abuse_reasons,
         theft_reasons=theft_reasons,
         final_stop_confidence=final_stop_confidence,
+        marketplace=marketplace_meta or None,
+        device_eval=device_eval if device_eval.get("fires") else None,
+        device_graph=graph_meta if device_graph_signals else None,
+        chat_eval=chat_eval if chat_eval.get("abuse_bonus") else None,
+        anomaly_eval=anomaly_eval if anomaly_eval.get("fires") else None,
     )
 
     ml_feature_vec = {

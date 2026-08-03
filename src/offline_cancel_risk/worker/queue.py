@@ -10,6 +10,10 @@ from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublis
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
+from offline_cancel_risk.features.anomaly import EntityAnomalyStore
+from offline_cancel_risk.features.chat_signals import ChatSignalStore
+from offline_cancel_risk.features.device_graph import DeviceGraphStore
+from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
 from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
@@ -66,6 +70,10 @@ class AssessJobQueue:
         driver_chains: DriverChainStore | None = None,
         baselines: EntityBaselineStore | None = None,
         cancel_stats: EntityCancelStatsStore | None = None,
+        devices: DeviceIntegrityStore | None = None,
+        device_graph: DeviceGraphStore | None = None,
+        chat_store: ChatSignalStore | None = None,
+        anomalies: EntityAnomalyStore | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -89,6 +97,10 @@ class AssessJobQueue:
                 driver_chains=driver_chains,
                 baselines=baselines,
                 cancel_stats=cancel_stats,
+                devices=devices,
+                device_graph=device_graph,
+                chat_store=chat_store,
+                anomalies=anomalies,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -113,6 +125,10 @@ class AssessJobQueue:
         driver_chains: DriverChainStore | None = None,
         baselines: EntityBaselineStore | None = None,
         cancel_stats: EntityCancelStatsStore | None = None,
+        devices: DeviceIntegrityStore | None = None,
+        device_graph: DeviceGraphStore | None = None,
+        chat_store: ChatSignalStore | None = None,
+        anomalies: EntityAnomalyStore | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -133,6 +149,10 @@ class AssessJobQueue:
                     driver_chains=driver_chains,
                     baselines=baselines,
                     cancel_stats=cancel_stats,
+                    devices=devices,
+                    device_graph=device_graph,
+                    chat_store=chat_store,
+                    anomalies=anomalies,
                 )
             finally:
                 self._queue.task_done()

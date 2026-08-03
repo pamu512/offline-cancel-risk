@@ -74,6 +74,10 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_DRIVER_CHAINS_PATH` | `data/driver_chains.db` | Cross-order cancel chains |
 | `OCR_ENTITY_BASELINES_PATH` | `data/entity_baselines.db` | Driver/user/pair score baselines |
 | `OCR_ENTITY_CANCEL_STATS_PATH` | `data/entity_cancel_stats.db` | Cancel-rate / pair density events |
+| `OCR_DEVICE_INTEGRITY_PATH` | `data/device_integrity.db` | Device integrity EWMA / last flags |
+| `OCR_DEVICE_GRAPH_PATH` | `data/device_graph.db` | Device↔driver/user graph edges |
+| `OCR_CHAT_SIGNALS_PATH` | `data/chat_signals.db` | Force-cancel / chat persuasion flags |
+| `OCR_ENTITY_ANOMALY_PATH` | `data/entity_anomaly.db` | Peer/self feature anomaly samples |
 | `OCR_MODELS_*` | under `data/` | Registry, shadow metrics, canary |
 | `OCR_TUNER_MIN_LABELED` | `30` | Min labels before auto-apply |
 | `OCR_TUNER_COOLDOWN_MINUTES` | `60` | Min gap between applies per head/market |
@@ -215,7 +219,11 @@ Manual overlay writes are audited as `manual_overlay`.
 | `feedback.daily_review_quota` + per-head min/max | Label budget | Reviewer capacity |
 | `ear.*` | $ attention ranking | Ops prioritization, not flags |
 
-### 4.3 Entity baselines (driver / user / pair)
+### 4.3 Entity anomaly watch (peer / self)
+
+`policy.anomaly` (default `mode: shadow`) records rolling features (`accept_cancel_rate`, `cancel_rate`, `cancel_abuse`) and flags MAD z-score spikes vs self-history / city·region peers. Shadow adds `anomaly_shadow:*` reasons + evidence only; set `mode: apply` to add the abuse bonus.
+
+### 4.4 Entity baselines (driver / user / pair)
 
 `policy.baselines` tracks rolling-window + EWMA score baselines per entity×head.
 
@@ -327,6 +335,10 @@ Config under `policy.feedback` + `policy.learning` (feedback numerics also guard
 | `data/label_tickets.db` | Review tickets |
 | `data/driver_chains.db` | Driver cancel events |
 | `data/entity_baselines.db` | Driver/user/pair baselines |
+| `data/device_integrity.db` | Device integrity EWMA |
+| `data/device_graph.db` | Device↔account graph edges |
+| `data/chat_signals.db` | Force-cancel / chat flags |
+| `data/entity_anomaly.db` | Entity anomaly feature samples |
 | `data/models.db` + `data/models/` | Model registry / artifacts |
 | `data/*.jsonl` | Streams (risk events, label tickets) |
 
@@ -404,6 +416,13 @@ Debounce / tick loops are **in-process**. Multiple API replicas will each run th
 | PUT/GET | `/v1/supply/forecast` | S&D forecast |
 | PUT/GET | `/v1/enforcement/hardgates` | Volume caps |
 | POST | `/v1/enforcement/clawback` | Clawback signal |
+| POST | `/v1/marketplace/events` | Accept/complete/cancel funnel for marketplace metrics |
+| GET | `/v1/devices/{device_id}` | Device integrity EWMA / last flags |
+| POST | `/v1/device-graph/edges` | Device↔driver/user identity edges |
+| GET | `/v1/device-graph/{device_id}` | Device graph counts / signals |
+| POST | `/v1/chat-signals` | Force-cancel / persuasion flags (structured) |
+| GET | `/v1/chat-signals/{order_display_id}` | Stored chat signals for an order |
+| GET | `/v1/anomalies/{entity_key}` | Recent anomaly feature samples (`driver:1`) |
 | GET | `/v1/baselines` | Entity baselines (`updated_since` cursor) |
 | GET | `/v1/baselines/{entity_key}` | All heads for `driver:1` / `user:2` / `pair:1:2` |
 | GET | `/v1/metrics/labels` | P/R/F1 snapshots |

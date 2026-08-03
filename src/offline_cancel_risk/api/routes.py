@@ -7,6 +7,10 @@ from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.control_plane.cycle import run_metrics_and_tune
+from offline_cancel_risk.features.chat_signals import (
+    instant_chat_risk,
+    normalize_chat_signals,
+)
 from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
     run_batch_sample,
@@ -67,6 +71,20 @@ class TuningRunRequest(BaseModel):
     city_code: str = ""
 
 
+class MarketplaceEventIngest(BaseModel):
+    driver_id: int
+    user_id: int | None = None
+    order_display_id: str
+    event_type: str  # accept | cancel | complete
+    event_ts: str
+    cancel_with_cause: bool | None = None
+    cancel_reason_code: str | None = None
+
+
+class MarketplaceEventsRequest(BaseModel):
+    events: list[MarketplaceEventIngest]
+
+
 router = APIRouter(prefix="/v1")
 
 
@@ -95,6 +113,10 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             driver_chains=getattr(request.app.state, "driver_chains", None),
             baselines=getattr(request.app.state, "baselines", None),
             cancel_stats=getattr(request.app.state, "cancel_stats", None),
+            devices=getattr(request.app.state, "devices", None),
+            device_graph=getattr(request.app.state, "device_graph", None),
+            chat_store=getattr(request.app.state, "chat_store", None),
+            anomalies=getattr(request.app.state, "anomalies", None),
         )
     else:
         queue.schedule(job_id)
@@ -504,6 +526,181 @@ async def post_clawback(body: ClawbackRequest, request: Request) -> dict[str, An
         reason=body.reason,
     )
     return state
+
+
+@router.post("/marketplace/events")
+async def ingest_marketplace_events(
+    body: MarketplaceEventsRequest, request: Request
+) -> dict[str, int]:
+    """Downstream posts accept/complete/cancel funnel events for marketplace metrics."""
+    _require_auth(request)
+    store = getattr(request.app.state, "cancel_stats", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="marketplace stats unavailable")
+    n = 0
+    for ev in body.events:
+        store.record_market_event(
+            driver_id=ev.driver_id,
+            user_id=ev.user_id,
+            order_display_id=ev.order_display_id,
+            event_type=ev.event_type,
+            event_ts=ev.event_ts,
+            cancel_with_cause=ev.cancel_with_cause,
+            cancel_reason_code=ev.cancel_reason_code,
+        )
+        n += 1
+    return {"recorded": n}
+
+
+@router.get("/devices/{device_id}")
+async def get_device_integrity(device_id: str, request: Request) -> dict[str, Any]:
+    """Last EWMA / flags for a Downstream device_id (slice 2)."""
+    _require_auth(request)
+    store = getattr(request.app.state, "devices", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="device integrity unavailable")
+    row = store.get(device_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="device not found")
+    return row
+
+
+class DeviceGraphEdge(BaseModel):
+    device_id: str
+    driver_id: int | None = None
+    user_id: int | None = None
+    event_ts: str | None = None
+
+
+class DeviceGraphEdgesRequest(BaseModel):
+    edges: list[DeviceGraphEdge] = Field(default_factory=list)
+
+
+@router.post("/device-graph/edges")
+async def ingest_device_graph_edges(
+    body: DeviceGraphEdgesRequest, request: Request
+) -> dict[str, int]:
+    """Downstream posts device↔driver/user identity edges (slice 3)."""
+    _require_auth(request)
+    store = getattr(request.app.state, "device_graph", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="device graph unavailable")
+    n = 0
+    for edge in body.edges:
+        if not edge.device_id or (edge.driver_id is None and edge.user_id is None):
+            continue
+        store.observe(
+            device_id=edge.device_id,
+            driver_id=edge.driver_id,
+            user_id=edge.user_id,
+            event_ts=edge.event_ts,
+        )
+        n += 1
+    return {"recorded": n}
+
+
+@router.get("/device-graph/{device_id}")
+async def get_device_graph(device_id: str, request: Request) -> dict[str, Any]:
+    """Rolling device graph counts / signals for a device_id."""
+    _require_auth(request)
+    store = getattr(request.app.state, "device_graph", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="device graph unavailable")
+    policy = getattr(request.app.state, "policy", {}) or {}
+    return store.evaluate(
+        device_id=device_id,
+        driver_id=None,
+        user_id=None,
+        as_of=None,
+        policy=policy,
+    )
+
+
+class ChatSignalIngest(BaseModel):
+    order_display_id: str
+    driver_id: int | None = None
+    user_id: int | None = None
+    event_ts: str | None = None
+    persuasion_suspected: bool | None = None
+    cash_offline_suggested: bool | None = None
+    rider_forced_cancel: bool | None = None
+    signal_score: float | None = None
+    source: str | None = None
+
+
+class ChatSignalsRequest(BaseModel):
+    signals: list[ChatSignalIngest] = Field(default_factory=list)
+
+
+@router.post("/chat-signals")
+async def ingest_chat_signals(
+    body: ChatSignalsRequest, request: Request
+) -> dict[str, int]:
+    """Downstream posts structured force-cancel / persuasion flags (no NLP)."""
+    _require_auth(request)
+    store = getattr(request.app.state, "chat_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="chat signals unavailable")
+    n = 0
+    for sig in body.signals:
+        flags = normalize_chat_signals(
+            {
+                "persuasion_suspected": sig.persuasion_suspected,
+                "cash_offline_suggested": sig.cash_offline_suggested,
+                "rider_forced_cancel": sig.rider_forced_cancel,
+                "signal_score": sig.signal_score,
+                "source": sig.source,
+            }
+        )
+        if not any(
+            flags.get(k)
+            for k in (
+                "persuasion_suspected",
+                "cash_offline_suggested",
+                "rider_forced_cancel",
+            )
+        ) and flags.get("signal_score") is None:
+            continue
+        store.upsert(
+            order_display_id=sig.order_display_id,
+            driver_id=sig.driver_id,
+            user_id=sig.user_id,
+            flags=flags,
+            risk=instant_chat_risk(flags),
+            event_ts=sig.event_ts,
+        )
+        n += 1
+    return {"recorded": n}
+
+
+@router.get("/chat-signals/{order_display_id}")
+async def get_chat_signals(order_display_id: str, request: Request) -> dict[str, Any]:
+    _require_auth(request)
+    store = getattr(request.app.state, "chat_store", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="chat signals unavailable")
+    row = store.get(order_display_id)
+    if row is None:
+        raise HTTPException(status_code=404, detail="signals not found")
+    return row
+
+
+@router.get("/anomalies/{entity_key:path}")
+async def get_entity_anomaly(entity_key: str, request: Request) -> dict[str, Any]:
+    """Recent feature samples for an entity key (`driver:1`)."""
+    _require_auth(request)
+    store = getattr(request.app.state, "anomalies", None)
+    if store is None:
+        raise HTTPException(status_code=503, detail="anomaly store unavailable")
+    cfg = (getattr(request.app.state, "policy", {}) or {}).get("anomaly") or {}
+    features = list(cfg.get("features") or ["accept_cancel_rate", "cancel_rate", "cancel_abuse"])
+    window_n = int(cfg.get("window_n", 20))
+    out: dict[str, Any] = {"entity_key": entity_key, "features": {}}
+    for feat in features:
+        out["features"][feat] = store.recent_entity_values(
+            entity_key, feat, limit=window_n
+        )
+    return out
 
 
 @router.get("/baselines")

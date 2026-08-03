@@ -8,7 +8,8 @@
 
 ## Features
 
-1. **Cancel stage** — `pre_pickup | at_merchant | en_route | near_dropoff | unknown`
+1. **Cancel stage** — `pre_pickup | at_merchant | en_route | near_dropoff | unknown`  
+   When the ordered stop **path** is incomplete, fall back to first visits: pickup → **all middle stops** (configurable `sequence.min_middle_fraction`, default 1.0) → drop. **Drop after pickup**; middles must fall between them. Missing middles → `middle_stops_missing` (no full sequence credit).
 2. **Pickup-then-cancel** — stage after merchant proximity
 3. **Entity cancel-rate** — rolling cancels per driver/user/pair
 4. **Evidence pack** — structured top contributors on `AssessmentResult`

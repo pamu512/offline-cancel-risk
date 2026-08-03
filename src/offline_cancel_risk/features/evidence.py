@@ -17,6 +17,11 @@ def build_evidence(
     abuse_reasons: list[str],
     theft_reasons: list[str],
     final_stop_confidence: float,
+    marketplace: dict[str, Any] | None = None,
+    device_eval: dict[str, Any] | None = None,
+    device_graph: dict[str, Any] | None = None,
+    chat_eval: dict[str, Any] | None = None,
+    anomaly_eval: dict[str, Any] | None = None,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = [
@@ -51,7 +56,101 @@ def build_evidence(
                 "feature": "entity_cancel_rate",
                 "value": round(float(cancel_rate), 4),
                 "head": "cancel_abuse",
-                "weight": float(cancel_rate),
+                "weight": min(1.0, float(cancel_rate) / 4.0),
+            }
+        )
+    if marketplace:
+        acr = marketplace.get("accept_cancel_rate")
+        if acr is not None:
+            items.append(
+                {
+                    "feature": "accept_cancel_rate",
+                    "value": round(float(acr), 4),
+                    "head": "cancel_abuse",
+                    "weight": float(acr),
+                }
+            )
+        cr = marketplace.get("completion_rate")
+        if cr is not None:
+            items.append(
+                {
+                    "feature": "completion_rate",
+                    "value": round(float(cr), 4),
+                    "head": "cancel_abuse",
+                    "weight": max(0.0, 1.0 - float(cr)),
+                }
+            )
+    if device_eval and device_eval.get("fires"):
+        items.append(
+            {
+                "feature": "device_integrity",
+                "value": {
+                    "effective_risk": round(
+                        float(device_eval.get("effective_risk") or 0.0), 4
+                    ),
+                    "instant_risk": round(
+                        float(device_eval.get("instant_risk") or 0.0), 4
+                    ),
+                    "ewma_risk": round(float(device_eval.get("ewma_risk") or 0.0), 4),
+                    "flags": device_eval.get("normalized") or {},
+                },
+                "head": "cancel_abuse",
+                "weight": float(device_eval.get("effective_risk") or 0.0),
+            }
+        )
+    if device_graph and device_graph.get("signals"):
+        items.append(
+            {
+                "feature": "device_graph",
+                "value": {
+                    "signals": list(device_graph.get("signals") or []),
+                    "drivers_on_device": device_graph.get("drivers_on_device"),
+                    "users_on_device": device_graph.get("users_on_device"),
+                    "devices_for_driver": device_graph.get("devices_for_driver"),
+                    "shared_device_pair": device_graph.get("shared_device_pair"),
+                },
+                "head": "cancel_abuse",
+                "weight": min(1.0, 0.25 * len(device_graph.get("signals") or [])),
+            }
+        )
+    if chat_eval and chat_eval.get("abuse_bonus"):
+        items.append(
+            {
+                "feature": "chat_force_cancel",
+                "value": {
+                    "risk": round(float(chat_eval.get("risk") or 0.0), 4),
+                    "flags": chat_eval.get("normalized") or {},
+                    "reasons": list(chat_eval.get("reasons") or []),
+                    "driver_signal_count": chat_eval.get("driver_signal_count"),
+                },
+                "head": "cancel_abuse",
+                "weight": float(chat_eval.get("risk") or 0.0),
+            }
+        )
+    if anomaly_eval and anomaly_eval.get("fires"):
+        top = None
+        for d in anomaly_eval.get("details") or []:
+            zs = [
+                z
+                for z in (d.get("z_self"), d.get("z_peer"))
+                if z is not None
+            ]
+            if not zs:
+                continue
+            mz = max(zs)
+            if top is None or mz > top[0]:
+                top = (mz, d)
+        items.append(
+            {
+                "feature": "entity_anomaly",
+                "value": {
+                    "mode": anomaly_eval.get("mode"),
+                    "signals": list(anomaly_eval.get("signals") or []),
+                    "cohort_key": anomaly_eval.get("cohort_key"),
+                    "top": top[1] if top else None,
+                },
+                "head": "cancel_abuse",
+                "weight": min(1.0, (top[0] / 6.0) if top else 0.5),
             }
         )
     if progress.get("wrong_direction"):
