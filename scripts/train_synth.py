@@ -7,7 +7,6 @@ import argparse
 import asyncio
 import json
 import logging
-import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
@@ -86,12 +85,14 @@ async def main_async(args: argparse.Namespace) -> int:
 
     n_target = int(args.n if args.n is not None else manifest.get("n_target", 0))
     if not args.train_only:
+        expected_shard = next_shard_index(manifest)
+        if args.start_shard is not None and args.start_shard != expected_shard:
+            raise SystemExit(
+                f"--start-shard {args.start_shard} != next shard index {expected_shard}; "
+                "omit --start-shard to resume from manifest, or set it equal to the next index"
+            )
         n_done = int(manifest.get("n_done", 0))
-        shard_idx = (
-            args.start_shard
-            if args.start_shard is not None
-            else next_shard_index(manifest)
-        )
+        shard_idx = expected_shard if args.start_shard is None else args.start_shard
         weights = manifest.get("weights", DEFAULT_WEIGHTS)
         flip_rate = float(manifest.get("flip_rate", args.flip_rate))
         seed = int(manifest.get("seed", args.seed))
@@ -168,7 +169,12 @@ def main(argv: list[str] | None = None) -> int:
         default=None,
         help="Override next shard index for resume",
     )
-    parser.add_argument("--flip-rate", type=float, default=0.0)
+    parser.add_argument(
+        "--flip-rate",
+        type=float,
+        default=None,
+        help="Label flip rate (phase b default 0.05; phase a default 0.0)",
+    )
     parser.add_argument(
         "--train-only",
         action="store_true",
@@ -198,6 +204,8 @@ def main(argv: list[str] | None = None) -> int:
         parser.error("--n is required unless --train-only")
     if args.n is None:
         args.n = read_manifest(args.outdir).get("n_target", 0)
+    if args.flip_rate is None:
+        args.flip_rate = 0.05 if args.phase == "b" else 0.0
 
     logging.basicConfig(
         level=logging.INFO if args.verbose else logging.WARNING,

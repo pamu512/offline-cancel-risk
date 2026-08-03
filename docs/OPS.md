@@ -94,6 +94,8 @@ Persist `data/` (or your mounted volume) across deploys.
 
 ### Synthetic model train (overnight)
 
+A++ multi-replica env vars (`OCR_PROFILE` / `OCR_QUEUE_BACKEND` / lock) require the corresponding uncommitted/ops PR — this section's overnight train commands work on the train branch alone.
+
 Phase A then B (~500k full assess each):
 
 ```bash
