@@ -101,3 +101,58 @@ def test_flip_labels_rate():
         flips += sum(1 for k in base if out[k] != base[k])
     rate = flips / (n * 3)
     assert 0.07 < rate < 0.13
+
+
+from offline_cancel_risk.train.scenarios import HEADS
+from offline_cancel_risk.train.shards import (
+    FEATURE_KEYS,
+    load_all_shards,
+    next_shard_index,
+    read_manifest,
+    write_manifest,
+    write_shard,
+)
+
+
+def test_shard_round_trip(tmp_path: Path):
+    assert FEATURE_KEYS == ML_FEATURE_KEYS
+
+    rng = np.random.default_rng(42)
+    n = 7
+    X = rng.random((n, 5)).astype(np.float32)
+    y = rng.integers(0, 2, (n, 3)).astype(np.float32)
+    meta = [{"order_display_id": f"O-{i}", "template": "plain_offline"} for i in range(n)]
+
+    path = write_shard(tmp_path, 0, X, y, meta_lines=meta)
+    assert path.exists()
+    assert path.name == "shard_00000.npz"
+    assert path.with_suffix(".meta.jsonl").exists()
+
+    with np.load(path) as data:
+        assert data["X"].shape == (n, 5)
+        assert data["y"].shape == (n, 3)
+        assert list(data["feature_names"]) == list(FEATURE_KEYS)
+        assert list(data["head_names"]) == list(HEADS)
+        np.testing.assert_array_equal(data["X"], X)
+        np.testing.assert_array_equal(data["y"], y)
+
+    manifest = {
+        "phase": "a",
+        "n_target": 100,
+        "n_done": n,
+        "shard_size": 1000,
+        "seed": 0,
+        "weights": {"plain_offline": 1.0},
+        "flip_rate": 0.0,
+        "policy_path": "config/policy.default.yaml",
+        "shards": [path.name],
+    }
+    write_manifest(tmp_path, manifest)
+    assert read_manifest(tmp_path) == manifest
+    assert next_shard_index(manifest) == 1
+
+    X2, y2 = load_all_shards(tmp_path)
+    assert X2.shape == (n, 5)
+    assert y2.shape == (n, 3)
+    np.testing.assert_array_equal(X2, X)
+    np.testing.assert_array_equal(y2, y)
