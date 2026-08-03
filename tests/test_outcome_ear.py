@@ -113,6 +113,20 @@ def test_resolve_recoverability_shadow_uses_static():
     assert meta["recoverability_learned"]["selective_theft"] == 0.95
 
 
+@pytest.mark.parametrize("mode", ["off", "bogus"])
+def test_resolve_recoverability_non_apply_modes_use_static(mode):
+    policy = load_policy(Path("config/policy.default.yaml"))
+    policy = {**policy, "ear": {**policy["ear"], "mode": mode}}
+    learned = {
+        "selective_theft": {"value": 0.95, "n_updates": 10, "updated_at": "x"},
+    }
+    live, meta = resolve_recoverability(policy, learned)
+    static = {k: float(v) for k, v in policy["ear"]["recoverability"].items()}
+    assert live == static
+    assert meta["mode"] == mode
+    assert meta["recoverability_learned"]["selective_theft"] == 0.95
+
+
 @pytest.mark.asyncio
 async def test_shadow_ear_matches_static(tmp_path):
     policy = load_policy(Path("config/policy.default.yaml"))

@@ -24,9 +24,7 @@ def resolve_recoverability(
         "recoverability_learned": full_learned,
     }
 
-    if mode == "shadow":
-        live = dict(static)
-    else:
+    if mode == "apply":
         live = {}
         for head, static_val in static.items():
             head_info = (learned or {}).get(head)
@@ -37,6 +35,8 @@ def resolve_recoverability(
                 live[head] = float(head_info["value"])
             else:
                 live[head] = static_val
+    else:
+        live = dict(static)
 
     return live, meta
 
