@@ -1,13 +1,56 @@
 from typing import Any
 
 
+def resolve_recoverability(
+    policy: dict[str, Any],
+    learned: dict[str, dict] | None,
+) -> tuple[dict[str, float], dict[str, Any]]:
+    ear_cfg = policy.get("ear") or {}
+    mode = str(ear_cfg.get("mode", "shadow"))
+    static = {
+        k: float(v) for k, v in (ear_cfg.get("recoverability") or {}).items()
+    }
+    min_updates = int(ear_cfg.get("min_updates_apply", 5))
+
+    full_learned = dict(static)
+    if learned:
+        for head, info in learned.items():
+            if head in full_learned:
+                full_learned[head] = float(info["value"])
+
+    meta: dict[str, Any] = {
+        "mode": mode,
+        "recoverability_static": dict(static),
+        "recoverability_learned": full_learned,
+    }
+
+    if mode == "shadow":
+        live = dict(static)
+    else:
+        live = {}
+        for head, static_val in static.items():
+            head_info = (learned or {}).get(head)
+            if (
+                head_info is not None
+                and int(head_info.get("n_updates", 0)) >= min_updates
+            ):
+                live[head] = float(head_info["value"])
+            else:
+                live[head] = static_val
+
+    return live, meta
+
+
 def compute_ear(
     scores: dict[str, float],
     order_value: float,
     policy: dict[str, Any],
+    *,
+    recoverability: dict[str, float] | None = None,
 ) -> tuple[dict[str, float], float]:
     ear_cfg = policy.get("ear") or {}
-    recoverability = ear_cfg.get("recoverability") or {}
+    if recoverability is None:
+        recoverability = ear_cfg.get("recoverability") or {}
     attention_weights = ear_cfg.get("attention_weights") or {}
 
     ear: dict[str, float] = {}

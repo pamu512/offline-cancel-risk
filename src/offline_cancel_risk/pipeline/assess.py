@@ -17,6 +17,7 @@ from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.pipeline.context import AssessContext
 from offline_cancel_risk.pipeline.geometry import run_geometry_stage
 from offline_cancel_risk.pipeline.idempotency import lookup_cached, make_idempotency_key
@@ -53,6 +54,7 @@ async def assess_order(
     device_graph: DeviceGraphStore | None = None,
     chat_store: ChatSignalStore | None = None,
     anomalies: EntityAnomalyStore | None = None,
+    outcomes: OutcomeStore | None = None,
     feature_sink: dict[str, float] | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
@@ -111,6 +113,7 @@ async def assess_order(
         device_graph=device_graph,
         chat_store=chat_store,
         anomalies=anomalies,
+        outcomes=outcomes,
         phash=phash,
         serving_model_id=serving_model_id,
         champion_rec=champion_rec,

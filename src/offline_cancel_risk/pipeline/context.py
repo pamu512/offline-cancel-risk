@@ -15,6 +15,7 @@ from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
 from offline_cancel_risk.models.registry import ModelRegistry
+from offline_cancel_risk.outcomes.store import OutcomeStore
 from offline_cancel_risk.pipeline.window import GpsWindowResult
 from offline_cancel_risk.policy.overlays import PolicyOverlayStore
 from offline_cancel_risk.ports import (
@@ -49,6 +50,7 @@ class AssessContext:
     device_graph: DeviceGraphPort | None = None
     chat_store: ChatSignalPort | None = None
     anomalies: EntityAnomalyPort | None = None
+    outcomes: OutcomeStore | None = None
 
     # prepare / serving
     phash: str = ""
@@ -112,6 +114,7 @@ class AssessContext:
     serve_model_id: str = "none"
     ear: dict[str, float] = field(default_factory=dict)
     attention: float = 0.0
+    ear_meta: dict[str, Any] = field(default_factory=dict)
     result: AssessmentResult | None = None
 
     @property

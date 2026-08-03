@@ -17,7 +17,7 @@ from offline_cancel_risk.features.evidence import build_evidence
 from offline_cancel_risk.pipeline.context import AssessContext
 from offline_cancel_risk.policy.routing import build_routing
 from offline_cancel_risk.scoring.blend import blend_scores
-from offline_cancel_risk.scoring.ear import compute_ear
+from offline_cancel_risk.scoring.ear import compute_ear, resolve_recoverability
 from offline_cancel_risk.scoring.policy import apply_thresholds
 from offline_cancel_risk.scoring.rules import compute_rule_scores
 
@@ -221,7 +221,26 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
             except Exception:
                 _LOG.exception("Canary shadow record failed")
 
-    ctx.ear, ctx.attention = compute_ear(ctx.scores, req.order_value, policy)
+    learned = None
+    if ctx.outcomes is not None:
+        region = (req.region_code or "").strip().upper()
+        city = (req.city_code or "").strip().upper()
+        if region and city:
+            learned = ctx.outcomes.get_recoverability(region, city)
+
+    live_rec, meta = resolve_recoverability(policy, learned)
+    ctx.ear, ctx.attention = compute_ear(
+        ctx.scores, req.order_value, policy, recoverability=live_rec
+    )
+    ear_learned, attention_learned = compute_ear(
+        ctx.scores,
+        req.order_value,
+        policy,
+        recoverability=meta["recoverability_learned"],
+    )
+    meta["ear_learned"] = ear_learned
+    meta["attention_learned"] = attention_learned
+    ctx.ear_meta = meta
     ear_total = float(sum(ctx.ear.values()))
 
     assessed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
@@ -263,6 +282,7 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
         baseline_meta=ctx.baseline_meta,
         cancel_stage=ctx.stage,
         evidence=ctx.evidence,
+        ear_meta=ctx.ear_meta,
     )
     ctx.result = result
     return result
