@@ -189,3 +189,43 @@ async def test_generate_shard_phase_a(tmp_path: Path):
         assert data["y"].shape == (5, 3)
         assert list(data["feature_names"]) == list(FEATURE_KEYS)
         assert list(data["head_names"]) == list(HEADS)
+
+
+@pytest.mark.asyncio
+async def test_fit_bundle_round_trip(tmp_path: Path):
+    from offline_cancel_risk.models.bundle import HEAD_NAMES, load_bundle
+    from offline_cancel_risk.train.dataset import generate_shard
+    from offline_cancel_risk.train.fit import fit_bundle
+
+    outdir = tmp_path / "shards"
+    await generate_shard(
+        phase="a",
+        n=40,
+        start_index=0,
+        seed=42,
+        weights=DEFAULT_WEIGHTS,
+        flip_rate=0.0,
+        policy=load_policy("config/policy.default.yaml"),
+        outdir=outdir,
+        shard_idx=0,
+    )
+    bundle_dir = tmp_path / "bundle"
+    metrics = fit_bundle(outdir, bundle_dir, holdout_frac=0.05, seed=0)
+    assert isinstance(metrics, dict)
+    assert (bundle_dir / "model.json").exists()
+    assert (bundle_dir / "feature_schema.json").exists()
+    assert (bundle_dir / "model.joblib").exists()
+    assert (bundle_dir / "metrics_baseline.json").exists()
+
+    handle = load_bundle(bundle_dir)
+    out = handle.predict(
+        {
+            "final_stop_confidence": 0.9,
+            "sequence_score": 0.8,
+            "dwell_fraction": 0.7,
+            "abuse_score": 0.2,
+            "theft_score": 0.1,
+        }
+    )
+    assert set(out) == set(HEAD_NAMES)
+    assert all(0.0 <= v <= 1.0 for v in out.values())
