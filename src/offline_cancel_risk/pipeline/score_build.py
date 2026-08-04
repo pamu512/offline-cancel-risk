@@ -65,6 +65,23 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
         reasons = [*reasons, "gps_gaps"]
     ctx.reasons = reasons
 
+    presence_keys = (
+        "dwell_target_s",
+        "median_gap_s",
+        "median_gap_raw_s",
+        "min_pts_effective",
+        "drop_off_min_pts_effective",
+        "place_class",
+        "vehicle_class",
+        "place_factor",
+        "vehicle_factor",
+        "autoscaled",
+    )
+    stop_presence = {
+        k: ctx.gps_window[f"presence_{k}"]
+        for k in presence_keys
+        if f"presence_{k}" in ctx.gps_window
+    }
     ctx.evidence = build_evidence(
         stage=ctx.stage,
         stage_meta=ctx.stage_meta,
@@ -81,6 +98,7 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
         device_graph=ctx.graph_meta if ctx.device_graph_signals else None,
         chat_eval=ctx.chat_eval if ctx.chat_eval.get("abuse_bonus") else None,
         anomaly_eval=ctx.anomaly_eval if ctx.anomaly_eval.get("fires") else None,
+        stop_presence=stop_presence or None,
     )
 
     ctx.ml_feature_vec = {
@@ -243,6 +261,9 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
     ctx.ear_meta = meta
     ear_total = float(sum(ctx.ear.values()))
 
+    # Downstream optional intel fill-rate (ops /v1/ops/downstream-fill).
+    ctx.gps_window["downstream_device_risk"] = bool(req.device_risk)
+    ctx.gps_window["downstream_chat_signals"] = bool(req.chat_signals)
     assessed_at = datetime.now(timezone.utc).isoformat().replace("+00:00", "Z")
     result = AssessmentResult(
         order_display_id=req.order_display_id,

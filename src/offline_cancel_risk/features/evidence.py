@@ -22,6 +22,7 @@ def build_evidence(
     device_graph: dict[str, Any] | None = None,
     chat_eval: dict[str, Any] | None = None,
     anomaly_eval: dict[str, Any] | None = None,
+    stop_presence: dict[str, Any] | None = None,
     limit: int = 8,
 ) -> list[dict[str, Any]]:
     items: list[dict[str, Any]] = [
@@ -181,6 +182,28 @@ def build_evidence(
                 },
                 "head": "cancelled_offline",
                 "weight": 0.6,
+            }
+        )
+    if stop_presence:
+        items.append(
+            {
+                "feature": "stop_presence",
+                "value": {
+                    "dwell_target_s": stop_presence.get("dwell_target_s"),
+                    "median_gap_s": stop_presence.get("median_gap_s"),
+                    "median_gap_raw_s": stop_presence.get("median_gap_raw_s"),
+                    "min_pts_effective": stop_presence.get("min_pts_effective"),
+                    "drop_off_min_pts_effective": stop_presence.get(
+                        "drop_off_min_pts_effective"
+                    ),
+                    "place_class": stop_presence.get("place_class"),
+                    "vehicle_class": stop_presence.get("vehicle_class"),
+                    "place_factor": stop_presence.get("place_factor"),
+                    "vehicle_factor": stop_presence.get("vehicle_factor"),
+                    "autoscaled": stop_presence.get("autoscaled"),
+                },
+                "head": "cancelled_offline",
+                "weight": 0.35,
             }
         )
     for r in abuse_reasons:

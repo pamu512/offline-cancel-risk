@@ -11,8 +11,14 @@ bounds:
   dbscan.extended_discount: {min: 0.05, max: 0.8}
   dbscan.drop_off_min_pts: {min: 5, max: 80}
   dbscan.round_trip_gap_seconds: {min: 600, max: 7200}
+  dbscan.autoscale_ref_gap_seconds: {min: 1, max: 60}
   dwell.min_dwell_seconds: {min: 30, max: 600}
   dwell.max_speed_mps: {min: 0.5, max: 5.0}
+  dwell.radius_m: {min: 30, max: 200}
+  dwell.max_run_displacement_m: {min: 10, max: 150}
+  dwell.min_gap_samples: {min: 2, max: 20}
+  dwell.gap_seconds_min: {min: 0.2, max: 10}
+  dwell.gap_seconds_max: {min: 5, max: 120}
   sequence.stop_match_radius_m: {min: 50, max: 400}
   sequence.offline_weight: {min: 0.5, max: 3.0}
   gps.min_window_h: {min: 1, max: 12}

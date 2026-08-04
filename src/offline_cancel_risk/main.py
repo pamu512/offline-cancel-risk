@@ -8,7 +8,8 @@ from typing import AsyncIterator
 from fastapi import FastAPI
 
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient, HttpGpsClient
-from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher
+from offline_cancel_risk.adapters.stream_factory import make_stream_publisher
+from offline_cancel_risk.ports import StreamPublisher
 from offline_cancel_risk.adapters.queue_factory import make_job_queue
 from offline_cancel_risk.adapters.store_factory import make_assessment_store
 from offline_cancel_risk.ports import AssessmentStore
@@ -48,7 +49,7 @@ def create_app(
     *,
     gps_client: GpsClient | None = None,
     settings: Settings | None = None,
-    stream: JsonlStreamPublisher | None = None,
+    stream: StreamPublisher | None = None,
     table: AssessmentStore | None = None,
     registry: ModelRegistry | None = None,
     shadow_metrics: ShadowMetricsStore | None = None,
@@ -56,8 +57,16 @@ def create_app(
     overlays: PolicyOverlayStore | None = None,
 ) -> FastAPI:
     settings = apply_profile(settings or get_settings())
+    if (
+        settings.profile.strip().lower() == "prod"
+        and not settings.gps_base_url.strip()
+        and gps_client is None
+    ):
+        raise RuntimeError(
+            "OCR_PROFILE=prod requires OCR_GPS_BASE_URL or an injected gps_client"
+        )
     gps = gps_client if gps_client is not None else _default_gps_client(settings)
-    stream_pub = stream or JsonlStreamPublisher(stream_path=settings.stream_path)
+    stream_pub = stream if stream is not None else make_stream_publisher(settings)
     table_pub = table or make_assessment_store(settings)
     policy = load_policy(settings.policy_path)
     guardrails = load_policy(settings.policy_guardrails_path)

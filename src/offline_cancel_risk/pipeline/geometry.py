@@ -10,6 +10,7 @@ from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.dbscan_v5 import compute_stop_confidences
 from offline_cancel_risk.features.device_integrity import evaluate_device_integrity
 from offline_cancel_risk.features.dwell import dwell_stop_mask
+from offline_cancel_risk.features.dwell_scale import resolve_stop_presence
 from offline_cancel_risk.features.geo import haversine, parse_latlong
 from offline_cancel_risk.features.gps_integrity import (
     analyze_gps_integrity,
@@ -93,13 +94,34 @@ async def run_geometry_stage(ctx: AssessContext) -> None:
 
     stops = parse_latlong(req.latlong)
     ctx.stops = stops
-    dbscan = compute_stop_confidences(window.points, stops, policy["dbscan"])
+    presence = resolve_stop_presence(
+        window.points,
+        policy,
+        place_class=getattr(req, "place_class", None),
+        vehicle_class=getattr(req, "vehicle_class", None),
+    )
+    # Flatten into gps_window (AssessmentResult allows only scalar values).
+    for key, val in presence.items():
+        if val is None:
+            continue
+        ctx.gps_window[f"presence_{key}"] = val
+    dbscan_policy = {
+        **policy["dbscan"],
+        "min_pts": int(presence["min_pts_effective"]),
+        "drop_off_min_pts": int(presence["drop_off_min_pts_effective"]),
+    }
+    dbscan = compute_stop_confidences(window.points, stops, dbscan_policy)
     ctx.confidence_list = list(dbscan["confidence_list"])
     ctx.final_stop_confidence = float(dbscan["final_confidence"])
 
+    dwell_cfg = policy["dwell"]
+    dwell_radius = float(
+        dwell_cfg.get("radius_m", policy["sequence"]["stop_match_radius_m"])
+    )
     dwell_policy = {
-        **policy["dwell"],
-        "radius_m": float(policy["sequence"]["stop_match_radius_m"]),
+        **dwell_cfg,
+        "min_dwell_seconds": float(presence["dwell_target_s"]),
+        "radius_m": dwell_radius,
     }
     ctx.dwell_masks = [
         dwell_stop_mask(window.points, stop, dwell_policy) for stop in stops

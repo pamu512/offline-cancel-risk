@@ -31,6 +31,8 @@ class LabeledCase:
     req: AssessRequest
     labels: dict[str, int]
     points: list[GpsPoint]
+    # Sampler / review strata tags (e.g. pattern_mass, transit_crawl).
+    strata: tuple[str, ...] = ()
 
 
 class _MultiGpsClient:
@@ -122,6 +124,7 @@ def default_holdout_cases() -> list[LabeledCase]:
                     "selective_theft": 1,
                 },
                 points=_cluster(center=PICKUP, start=assign),
+                strata=("pattern_mass", "selective_theft"),
             )
         )
 
@@ -155,10 +158,74 @@ def default_holdout_cases() -> list[LabeledCase]:
                     "selective_theft": 0,
                 },
                 points=_cluster(center=PICKUP, start=assign, n=8, step_minutes=1),
+                strata=("coverage",),
             )
         )
 
     return cases
+
+
+def transit_dwell_cases() -> list[LabeledCase]:
+    """Slice: traffic crawl vs stationary dwell near pickup (dwell calibration)."""
+    assign = datetime(2024, 4, 1, 10, 0, 0)
+    cancel = datetime(2024, 4, 1, 10, 30, 0)
+    crawl: list[GpsPoint] = []
+    for i in range(4):
+        crawl.append(
+            GpsPoint(
+                lat=PICKUP[0] + i * 0.0003,
+                lon=PICKUP[1],
+                ts=(assign + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                speed_mps=0.8,
+            )
+        )
+    stuck: list[GpsPoint] = []
+    for i in range(4):
+        stuck.append(
+            GpsPoint(
+                lat=PICKUP[0] + (i % 2) * 0.00001,
+                lon=PICKUP[1],
+                ts=(assign + timedelta(minutes=i)).strftime("%Y-%m-%d %H:%M:%S"),
+                speed_mps=0.2,
+            )
+        )
+
+    def _req(oid: str, did: int) -> AssessRequest:
+        return AssessRequest(
+            order_display_id=oid,
+            driver_id=did,
+            cancel_ts=cancel.strftime("%Y-%m-%d %H:%M:%S"),
+            assign_ts=assign.strftime("%Y-%m-%d %H:%M:%S"),
+            latlong=f"{PICKUP[0]}|{PICKUP[1]},{DEST[0]}|{DEST[1]}",
+            path_point_num=2,
+            order_status="CANCELLED",
+            category="HAUL",
+            order_value=50.0,
+            currency="PHP",
+        )
+
+    return [
+        LabeledCase(
+            req=_req("EVAL-TRANSIT-CRAWL", 901),
+            labels={
+                "cancelled_offline": 0,
+                "cancel_abuse": 0,
+                "selective_theft": 0,
+            },
+            points=crawl,
+            strata=("transit_crawl",),
+        ),
+        LabeledCase(
+            req=_req("EVAL-TRANSIT-STUCK", 902),
+            labels={
+                "cancelled_offline": 0,
+                "cancel_abuse": 0,
+                "selective_theft": 0,
+            },
+            points=stuck,
+            strata=("stationary_dwell",),
+        ),
+    ]
 
 
 def _empty_counts() -> dict[str, int]:
@@ -229,6 +296,8 @@ def run_holdout_eval(
     always_all = {h: _empty_counts() for h in _HEADS}
     never_all = {h: _empty_counts() for h in _HEADS}
     pattern_n = {h: 0 for h in _HEADS}
+    strata_counts: dict[str, int] = {}
+    dwell_by_strata: dict[str, list[float]] = {}
 
     async def _run() -> None:
         with tempfile.TemporaryDirectory(prefix="ocr-holdout-") as tmp:
@@ -236,9 +305,15 @@ def run_holdout_eval(
             stream = JsonlStreamPublisher(stream_path=tmp_path / "risk_events.jsonl")
             table = SqliteTablePublisher(sqlite_path=tmp_path / "assessments.db")
             for case in pack:
+                for tag in case.strata:
+                    strata_counts[tag] = strata_counts.get(tag, 0) + 1
                 result: AssessmentResult = await assess_order(
                     case.req, gps, policy, stream=stream, table=table
                 )
+                for tag in case.strata:
+                    dwell_by_strata.setdefault(tag, []).append(
+                        float(result.scores.cancelled_offline)
+                    )
                 flags = result.flags.model_dump()
                 for head in _HEADS:
                     truth = int(case.labels[head])
@@ -271,6 +346,10 @@ def run_holdout_eval(
         },
         "pattern_cohort": {},
         "beats_always_precision": {},
+        "sampler_strata": dict(strata_counts),
+        "strata_mean_offline_score": {
+            k: (sum(v) / len(v) if v else 0.0) for k, v in dwell_by_strata.items()
+        },
     }
     for head in _HEADS:
         model_m = _finalize(model_all[head])

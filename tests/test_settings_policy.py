@@ -10,7 +10,9 @@ def test_load_policy_has_v5_seeds():
     assert policy["gps"]["max_window_h"] == 24
     assert policy["learning"]["target_precision"] == 0.98
     assert policy["learning"]["pattern_strata"]["cancelled_offline"]["score_min"] == 0.85
-    assert policy["baselines"]["mode"] == "shadow"
+    assert policy["baselines"]["mode"] == "apply"
+    assert policy["anomaly"]["mode"] == "apply"
+    assert policy["baselines"]["heads"]["selective_theft"]["mode"] == "shadow"
     assert policy["baselines"]["pair_window_n"] == 8
 
 def test_settings_policy_path_exists():

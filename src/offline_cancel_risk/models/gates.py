@@ -67,12 +67,47 @@ def evaluate_promotion(
             if lift < min_catch_lift:
                 blockers.append(f"catch_lift_insufficient:{lift:.4f}<{min_catch_lift}")
 
+    # Label agreement when Downstream labels are present on shadow rows.
+    labeled_n = 0
+    agree_n = 0
+    for row in rows:
+        if not row.labels:
+            continue
+        labeled_n += 1
+        head_ok = True
+        for head, thr in thresholds.items():
+            if head not in row.labels:
+                continue
+            truth = int(row.labels[head])
+            pred = 1 if row.shadow_scores.get(head, 0.0) >= thr else 0
+            if pred != truth:
+                head_ok = False
+                break
+        if head_ok:
+            agree_n += 1
+    label_agreement = (agree_n / labeled_n) if labeled_n else None
+    min_label_n = int(gates.get("min_labeled_shadow", 0))
+    min_agree = gates.get("min_label_agreement")
+    if min_label_n > 0 and labeled_n < min_label_n:
+        blockers.append(f"min_labeled_shadow:{labeled_n}<{min_label_n}")
+    if (
+        min_agree is not None
+        and labeled_n > 0
+        and label_agreement is not None
+        and float(label_agreement) < float(min_agree)
+    ):
+        blockers.append(
+            f"label_agreement:{label_agreement:.4f}<{float(min_agree)}"
+        )
+
     metrics = {
         "n": n,
         "champion_fp_dollar_proxy": champ_fp,
         "shadow_fp_dollar_proxy": shadow_fp,
         "champion_catch_dollar_proxy": champ_catch,
         "shadow_catch_dollar_proxy": shadow_catch,
+        "labeled_n": labeled_n,
+        "label_agreement": label_agreement,
     }
     ready = 1 if not blockers else 0
     return PromotionStatus(

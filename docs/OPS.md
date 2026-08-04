@@ -15,7 +15,7 @@ Audience: ops/platform engineers integrating the service, and product teams wiri
 | Policy | Default YAML + region/city overlays inside guardrails |
 | Feedback sampler | Daily label-ticket quota (inline + batch) |
 | Control plane | Pattern-cohort precision/recall, supply operating point, hardgates, tuner, audit |
-| Entity baselines | Rolling+EWMA driver/user/pair baselines; band-limited FP dampener (`mode: shadow` default) |
+| Entity baselines | Rolling+EWMA FP dampener (`mode: apply` for offline/abuse; theft head stays `shadow`) |
 | Platform patterns | Cancel stage, heading-aware A→B progress, teleport dampen, cancel-rate/pair density, evidence pack |
 | Models | Optional joblib/ONNX champion / shadow / canary |
 
@@ -52,13 +52,14 @@ OCR_SYNC_ASSESS=1 uvicorn offline_cancel_risk.main:app --host 0.0.0.0 --port 800
 uvicorn offline_cancel_risk.main:app --host 0.0.0.0 --port 8000
 ```
 
-Health: `GET /v1/health` → `{"status":"ok"}`.
+Health: `GET /v1/health` → `{"status":"ok"}` (liveness).  
+Ready: `GET /v1/ready` → 200 when auth/GPS config is sane for the profile; 503 otherwise (empty Fake GPS under prod).
 
 ### 2.3 Important environment variables (`OCR_*`)
 
 | Variable | Default (conceptually) | Purpose |
 |---|---|---|
-| `OCR_PROFILE` | `demo` | `prod` forces auth on and requires `OCR_API_KEYS` at startup |
+| `OCR_PROFILE` | `demo` | `prod` forces auth, requires `OCR_API_KEYS`, and requires `OCR_GPS_BASE_URL` (or injected GPS client) |
 | `OCR_SYNC_ASSESS` | `false` | `true` = assess in request path (dev) |
 | `OCR_AUTH_REQUIRED` | `false` | Require API key / bearer on assess + control routes (`true` under `OCR_PROFILE=prod`) |
 | `OCR_API_KEYS` | empty | Comma-separated keys when auth on |
@@ -66,6 +67,8 @@ Health: `GET /v1/health` → `{"status":"ok"}`.
 | `OCR_ASSESS_QUEUE_PATH` | `data/assess_queue.db` | SQLite path when `OCR_QUEUE_BACKEND=sqlite` |
 | `OCR_CONTROL_PLANE_LOCK_PATH` | _(sibling of control-plane db)_ | File flock so only one replica runs control-plane ticks |
 | `OCR_GPS_BASE_URL` / `OCR_GPS_API_KEY` | empty | HTTP GPS adapter; empty → fake/empty GPS |
+| `OCR_STREAM_URL` / `OCR_STREAM_API_KEY` | empty | When set, fan-out each assessment JSON to HTTP webhook + local JSONL |
+| `OCR_STREAM_TIMEOUT_S` | `5` | HTTP stream POST timeout |
 | `OCR_POLICY_PATH` | `config/policy.default.yaml` | Base policy |
 | `OCR_POLICY_GUARDRAILS_PATH` | `config/policy_guardrails.default.yaml` | Overlay bounds |
 | `OCR_POLICY_OVERLAYS_PATH` | `data/policy_overlays.db` | Market overlays |
@@ -218,17 +221,35 @@ curl -X POST localhost:8000/v1/outcomes \
 #    "recoverability":{...},"n_updates":1}
 
 curl 'localhost:8000/v1/outcomes/recoverability?region_code=PH&city_code=MNL'
+# → includes ear_shadow: static vs learned delta, apply_ready per head, recommendation
 curl 'localhost:8000/v1/outcomes?order_display_id=ORD-123&limit=100'
 ```
 
 **Shadow vs apply** (`policy.ear.mode`, default `shadow`):
 
-- **Shadow** — live `expected_revenue_at_risk` / `attention_score` use static policy recoverability (unchanged golden scores). Assessments include `ear_meta` with learned weights for monitoring.
+- **Shadow** — live `expected_revenue_at_risk` / `attention_score` use static policy recoverability (unchanged golden scores). Assessments include `ear_meta` with learned weights for monitoring. Use `ear_shadow.recommendation == consider_apply` when all heads have `n_updates ≥ min_updates_apply`.
 - **Apply** — after `min_updates_apply` (default 5) EWMA updates per head, live EAR uses learned recoverability; cold heads still fall back to static defaults.
 
 Knobs: `policy.ear.outcome_ewma_alpha` (default `0.05`), `policy.ear.min_updates_apply`. Auth required when `OCR_AUTH_REQUIRED=1` or `OCR_PROFILE=prod`.
 
 See [outcome-ear-loop design](superpowers/specs/2026-08-03-outcome-ear-loop-design.md).
+
+### 3.6 Place / vehicle class (Downstream-only)
+
+Optional assess fields `place_class` / `vehicle_class` scale target dwell \(D\). Omitted → `unknown` (factor 1.0). No POI inference here.
+
+| Enum | Examples |
+|---|---|
+| `place_class` | `curb`, `residential`, `apartment`, `commercial`, `unknown` |
+| `vehicle_class` | `walker`, `cycle`, `two_wheel`, `van_pickup`, `large_4w`, `box_truck`, `semi`, `unknown` |
+
+Fill-rate: `GET /v1/ops/presence-fill` over latest assessments. Tune factors via market overlays on `dwell.place_factors` / `dwell.vehicle_factors` / `dwell.min_dwell_seconds`.
+
+After labels exist and place fill-rate is healthy, `GET /v1/ops/dwell-factor-nudges` suggests factor changes from offline FP/FN by `place_class` (review → overlay; never auto-applied). Chat/device fill: `GET /v1/ops/downstream-fill`.
+
+### 3.7 Label feedback SLO
+
+Aim to close ≥ `feedback.per_head_min` (default 5) tickets **per head per UTC day** within `daily_review_quota`. Holdout reports `sampler_strata` tags for cohort coverage (`pattern_mass`, `coverage`, transit slice helpers).
 
 ---
 
@@ -270,6 +291,10 @@ Manual overlay writes are audited as `manual_overlay`.
 | `thresholds.*` | Soft score → flag | Primary precision/recall lever |
 | `sequence.offline_weight` | Weight of route-sequence evidence in offline rule | Offline FPs/FNs from path mismatch |
 | `dbscan.*` / `dwell.*` | Stop clustering / dwell | GPS noise or sparse markets |
+| `dbscan.autoscale_min_pts` + `autoscale_ref_gap_seconds` | Scale `min_pts` from median ping gap | Mixed 1s–30s ping platforms |
+| `dwell.gap_seconds_min` / `gap_seconds_max` | Clamp τ before autoscale | Bursty or batched GPS skewing median gap |
+| `dwell.place_factors` / `vehicle_factors` | Target dwell \(D\) multipliers (optional assess fields) | Market/mode mix; skip fields → 1.0 |
+| `dwell.radius_m` / `max_run_displacement_m` | Tighter pin + reject traffic crawl | Signal/queue FPs near stop |
 | `blend.*.rule_weight` / `ml_weight` | Rules vs ML | After shadow model is healthy |
 | `theft.high_value_amount` / `food_categories` | Theft head sensitivity | Category mix changes |
 | `abuse.near_dest_radius_m` / `chain_lookback_minutes` | Abuse geography & chains | Reassign-heavy markets |
@@ -279,13 +304,13 @@ Manual overlay writes are audited as `manual_overlay`.
 
 ### 4.3 Entity anomaly watch (peer / self)
 
-`policy.anomaly` (default `mode: shadow`) records rolling features (`accept_cancel_rate`, `cancel_rate`, `cancel_abuse`) and flags MAD z-score spikes vs self-history / city·region peers. Shadow adds `anomaly_shadow:*` reasons + evidence only; set `mode: apply` to add the abuse bonus.
+`policy.anomaly` (default `mode: apply`) records rolling features (`accept_cancel_rate`, `cancel_rate`, `cancel_abuse`) and flags MAD z-score spikes vs self-history / city·region peers. Apply adds the abuse bonus; set `mode: shadow` for `anomaly_shadow:*` reasons only.
 
 ### 4.4 Entity baselines (driver / user / pair)
 
 `policy.baselines` tracks rolling-window + EWMA score baselines per entity×head.
 
-- **Default `mode: shadow`** — writes baselines + `baseline_meta` / `baseline_shadow:*` reasons; does **not** change scores until you set `mode: apply` (per-head overrides allowed; theft defaults to shadow).
+- **Default `mode: apply`** for offline/abuse; **`selective_theft` head stays `shadow`**. Per-head overrides allowed.
 - Discount (apply) only when score is in `(baseline + above_epsilon, armed_thr)` — never damps absolute threshold crossings.
 - Assessments store `scores_raw` (pre-discount) for learning joins; warehouse pulls `GET /v1/baselines?updated_since=...`.
 - Pair uses `pair_window_n` (smaller); backoff prefers pair → driver → user.
@@ -383,6 +408,21 @@ Config under `policy.feedback` + `policy.learning` (feedback numerics also guard
 
 ## 6. Maintenance
 
+### 6.0 Topology (single-writer / HA)
+
+This service is a **feature producer**, not multi-region SaaS. Default layout:
+
+| Store | Default | Multi-replica note |
+|---|---|---|
+| Assessments / feedback | SQLite or `OCR_DATABASE_URL` (Postgres) | Prefer Postgres when >1 API replica shares idempotency |
+| Assess job queue | `memory` or `sqlite` (`OCR_QUEUE_BACKEND`) | Use `sqlite` on a **shared volume** (or one worker) |
+| Control-plane tick | File flock (`OCR_CONTROL_PLANE_LOCK_PATH`) | One leader per shared lock volume |
+| Outcomes, tickets, overlays, models, baselines, … | Per-path SQLite under `data/` | Single writer or shared disk; not cross-region |
+| Risk stream | JSONL + optional `OCR_STREAM_URL` HTTP | Inject custom `StreamPublisher` for Kafka/SQS |
+
+**Do:** one control-plane leader, Postgres for assessments when scaling API, HTTP/Kafka stream for Downstream.  
+**Don't:** expect Redis/SQS HA inside this repo — keep those in the tenant adapter.
+
 ### 6.1 Data stores to back up
 
 | Path (default) | Contents |
@@ -473,6 +513,10 @@ OCR_PROFILE=prod OCR_API_KEYS=... OCR_QUEUE_BACKEND=sqlite \
 | Method | Path | Purpose |
 |---|---|---|
 | GET | `/v1/health` | Liveness |
+| GET | `/v1/ready` | Readiness (auth/GPS config); 503 if not ready |
+| GET | `/v1/ops/presence-fill` | Downstream place/vehicle fill-rate |
+| GET | `/v1/ops/downstream-fill` | Downstream chat/device_risk fill-rate |
+| GET | `/v1/ops/dwell-factor-nudges` | Suggested place_factor overlays from labeled FP/FN |
 | POST | `/v1/assess` | Enqueue assess |
 | POST | `/v1/assess:batch` | Batch enqueue |
 | GET | `/v1/assess/{job_id}` | Job status / result |
@@ -503,7 +547,7 @@ OCR_PROFILE=prod OCR_API_KEYS=... OCR_QUEUE_BACKEND=sqlite \
 | GET | `/v1/audit/policy` | Audit trail |
 | GET/POST | `/v1/models…` | Sideload, evaluate, canary, promote |
 
-Assess + control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1` or `OCR_PROFILE=prod`. Health stays open.
+Assess + control routes honor `_require_auth` when `OCR_AUTH_REQUIRED=1` or `OCR_PROFILE=prod`. Health stays open; ready stays open (no auth) so orchestrators can probe.
 
 ---
 

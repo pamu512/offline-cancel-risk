@@ -2,6 +2,9 @@ min_shadow_assessments: 500
 max_fp_dollar_lift: 0.0          # challenger FP$ proxy must be <= champion * (1 + this)
 min_catch_lift: 0.02             # relative catch_$ lift vs champion
 max_ece_delta: 0.02              # placeholder until calibration wired
+# Soft: report label_agreement when labels exist; set floors to enforce.
+min_labeled_shadow: 0
+min_label_agreement: null
 auto_canary: true
 canary_pct: 5
 canary_hours: 24

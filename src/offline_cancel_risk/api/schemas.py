@@ -43,6 +43,9 @@ class AssessRequest(BaseModel):
     marketplace_events: list[dict] = Field(default_factory=list)
     # Downstream chat/force-cancel flags (no NLP here). See POST /v1/chat-signals.
     chat_signals: dict[str, bool | float | str] | None = None
+    # Optional stop-presence priors (skipped → unknown / factor 1.0). Market overlays tune tables.
+    place_class: str | None = None
+    vehicle_class: str | None = None
     # When true: bump assessment_generation and mark prior generations provisional.
     force_reassess: bool = False
 

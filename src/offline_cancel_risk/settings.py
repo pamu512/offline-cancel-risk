@@ -18,6 +18,10 @@ class Settings(BaseSettings):
     # When set (postgresql://...), assessments/feedback use Postgres instead of sqlite_path.
     database_url: str = ""
     stream_path: str = str(ROOT / "data" / "risk_events.jsonl")
+    # When set, fan-out JSONL + HTTP POST of each assessment (Downstream bus).
+    stream_url: str = ""
+    stream_api_key: str = ""
+    stream_timeout_s: float = 5.0
     models_sqlite_path: str = str(ROOT / "data" / "models.db")
     models_root: str = str(ROOT / "data" / "models")
     shadow_metrics_path: str = str(ROOT / "data" / "shadow_metrics.db")

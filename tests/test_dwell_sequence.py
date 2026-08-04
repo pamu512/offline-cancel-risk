@@ -29,6 +29,63 @@ def test_pass_through_not_dwell():
     assert dwell_stop_mask(points, stop, policy) is False
 
 
+def test_missing_speed_inside_radius_counts_as_stationary():
+    stop = (1.0, 2.0)
+    points = [
+        GpsPoint(1.0, 2.0, "2024-01-01 10:00:00", None),
+        GpsPoint(1.0, 2.0, "2024-01-01 10:01:00", None),
+        GpsPoint(1.0, 2.0, "2024-01-01 10:02:30", None),
+    ]
+    policy = {"min_dwell_seconds": 120, "max_speed_mps": 1.5, "radius_m": 80}
+    assert dwell_stop_mask(points, stop, policy) is True
+
+
+def test_missing_speed_outside_radius_not_dwell():
+    stop = (1.0, 2.0)
+    points = [
+        GpsPoint(1.05, 2.0, "2024-01-01 10:00:00", None),
+        GpsPoint(1.05, 2.0, "2024-01-01 10:01:00", None),
+        GpsPoint(1.05, 2.0, "2024-01-01 10:02:30", None),
+    ]
+    policy = {"min_dwell_seconds": 120, "max_speed_mps": 1.5, "radius_m": 80}
+    assert dwell_stop_mask(points, stop, policy) is False
+
+
+def test_traffic_crawl_rejected_by_displacement():
+    """Low-speed crawl across the geofence is not a parked dwell."""
+    stop = (1.0, 2.0)
+    # ~111m per 0.001° lat; stay inside 150m radius but displace >40m over 3min
+    points = [
+        GpsPoint(1.0, 2.0, "2024-01-01 10:00:00", 0.8),
+        GpsPoint(1.0003, 2.0, "2024-01-01 10:01:00", 0.8),
+        GpsPoint(1.0006, 2.0, "2024-01-01 10:02:00", 0.8),
+        GpsPoint(1.0009, 2.0, "2024-01-01 10:03:00", 0.8),
+    ]
+    policy = {
+        "min_dwell_seconds": 120,
+        "max_speed_mps": 1.5,
+        "radius_m": 150,
+        "max_run_displacement_m": 40,
+    }
+    assert dwell_stop_mask(points, stop, policy) is False
+
+
+def test_stationary_dwell_ok_with_displacement_cap():
+    stop = (1.0, 2.0)
+    points = [
+        GpsPoint(1.0, 2.0, "2024-01-01 10:00:00", 0.2),
+        GpsPoint(1.00001, 2.0, "2024-01-01 10:01:00", 0.2),
+        GpsPoint(1.0, 2.0, "2024-01-01 10:02:30", 0.2),
+    ]
+    policy = {
+        "min_dwell_seconds": 120,
+        "max_speed_mps": 1.5,
+        "radius_m": 80,
+        "max_run_displacement_m": 40,
+    }
+    assert dwell_stop_mask(points, stop, policy) is True
+
+
 def test_two_short_dwells_separated_by_away_do_not_merge():
     """Leaving radius must break the run; two 60s visits ≠ one 120s dwell."""
     stop = (1.0, 2.0)

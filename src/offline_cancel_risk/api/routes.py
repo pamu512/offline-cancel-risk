@@ -15,11 +15,15 @@ from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
     run_batch_sample,
 )
+from offline_cancel_risk.ops.downstream_fill import downstream_intel_fill_report
+from offline_cancel_risk.ops.dwell_factor_nudge import dwell_factor_nudge_report
+from offline_cancel_risk.ops.presence_fill import presence_fill_report
 from offline_cancel_risk.policy.resolve import GuardrailError
 from offline_cancel_risk.policy.service import (
     resolved_policy_for_market,
     save_overlay,
 )
+from offline_cancel_risk.scoring.ear import ear_shadow_delta_report
 
 
 class AssessBatchRequest(BaseModel):
@@ -91,6 +95,36 @@ router = APIRouter(prefix="/v1")
 @router.get("/health")
 async def health() -> dict[str, str]:
     return {"status": "ok"}
+
+
+@router.get("/ready")
+async def ready(request: Request) -> dict[str, Any]:
+    """Readiness: config needed for prod-safe assess (not a live GPS ping)."""
+    settings = request.app.state.settings
+    gps = request.app.state.gps_client
+    gps_url = bool(settings.gps_base_url.strip())
+    if gps_url:
+        gps_configured = True
+    elif type(gps).__name__ == "FakeGpsClient":
+        # Empty default Fake is misconfig; non-empty inject is ok for tests/demo.
+        gps_configured = bool(getattr(gps, "_points", None))
+    else:
+        gps_configured = True
+    profile = settings.profile.strip().lower()
+    auth_ok = (not settings.auth_required) or bool(settings.api_keys.strip())
+    ready_ok = auth_ok and (profile != "prod" or gps_configured)
+    body = {
+        "status": "ready" if ready_ok else "not_ready",
+        "profile": profile,
+        "auth_required": bool(settings.auth_required),
+        "auth_ok": auth_ok,
+        "gps_base_url_set": gps_url,
+        "gps_configured": gps_configured,
+        "queue_backend": settings.queue_backend,
+    }
+    if body["status"] != "ready":
+        raise HTTPException(status_code=503, detail=body)
+    return body
 
 
 async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
@@ -336,11 +370,55 @@ async def get_outcome_recoverability(
         raise HTTPException(status_code=503, detail="outcomes unavailable")
     region = region_code.strip().upper()
     city = city_code.strip().upper()
+    learned = store.get_recoverability(region, city)
+    policy = resolved_policy_for_market(
+        request.app.state.policy,
+        request.app.state.overlays,
+        region_code=region or None,
+        city_code=city or None,
+    )
     return {
         "region_code": region,
         "city_code": city,
-        "heads": store.get_recoverability(region, city),
+        "heads": learned,
+        "ear_shadow": ear_shadow_delta_report(policy, learned),
     }
+
+
+@router.get("/ops/presence-fill")
+async def get_presence_fill(request: Request) -> dict[str, Any]:
+    """Downstream place_class / vehicle_class fill-rate from latest assessments."""
+    _require_auth(request)
+    table = request.app.state.table
+    rows = table.list_latest_assessments()
+    return presence_fill_report(rows)
+
+
+@router.get("/ops/downstream-fill")
+async def get_downstream_fill(request: Request) -> dict[str, Any]:
+    """Downstream chat_signals / device_risk fill-rate from latest assessments."""
+    _require_auth(request)
+    table = request.app.state.table
+    return downstream_intel_fill_report(table.list_latest_assessments())
+
+
+@router.get("/ops/dwell-factor-nudges")
+async def get_dwell_factor_nudges(
+    request: Request,
+    min_support: int = 10,
+    min_fill_rate: float = 0.2,
+) -> dict[str, Any]:
+    """Suggest place_factor overlay nudges from labeled offline FP/FN (not auto-applied)."""
+    _require_auth(request)
+    table = request.app.state.table
+    policy = request.app.state.policy
+    return dwell_factor_nudge_report(
+        assessments=table.list_latest_assessments(),
+        feedback=table.list_feedback(),
+        policy=policy,
+        min_support=max(1, int(min_support)),
+        min_fill_rate=max(0.0, min(1.0, float(min_fill_rate))),
+    )
 
 
 @router.get("/outcomes")
