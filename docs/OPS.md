@@ -2,7 +2,7 @@
 
 How to run, tune, use, and maintain **offline-cancel-risk** in production-shaped deployments.
 
-Audience: ops/platform engineers integrating the service, and product teams wiring a tuning UI. For a one-page overview, see the [README](../README.md).
+Audience: ops/platform engineers integrating the service, and product teams wiring a tuning UI. For a one-page overview, see the [README](../README.md). For bring-up, minimum requirements, and tuning order, see the [MANUAL](MANUAL.md).
 
 ---
 
