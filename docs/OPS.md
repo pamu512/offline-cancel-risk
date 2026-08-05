@@ -74,7 +74,8 @@ Ready: `GET /v1/ready` → 200 when auth/GPS config is sane for the profile; 503
 | `OCR_POLICY_OVERLAYS_PATH` | `data/policy_overlays.db` | Market overlays |
 | `OCR_SQLITE_PATH` | `data/assessments.db` | Assessments + feedback |
 | `OCR_STREAM_PATH` | `data/risk_events.jsonl` | Risk event stream |
-| `OCR_CONTROL_PLANE_SQLITE_PATH` | `data/control_plane.db` | Forecast, hardgates, metrics, audit |
+| `OCR_CONTROL_PLANE_SQLITE_PATH` | `data/control_plane.db` | Forecast, hardgates, metrics, audit, DBSCAN retune runs |
+| `OCR_ASSESS_GPS_CACHE_PATH` | `data/assess_gps_cache.db` | Assess-time GPS replay cache for market DBSCAN retune |
 | `OCR_OPERATING_POINT_PATH` | `config/operating_point.default.yaml` | Peak/surplus P/R bands |
 | `OCR_LABEL_TICKETS_PATH` | `data/label_tickets.db` | Review tickets |
 | `OCR_LABEL_TICKETS_STREAM_PATH` | `data/label_tickets.jsonl` | Ticket stream |
@@ -368,6 +369,29 @@ curl 'localhost:8000/v1/audit/policy?limit=50'
 ```
 
 **Do not** rely on auto-tune with &lt; `learning.min_pattern_support` labeled pattern-cohort examples per head/market—it will reject with `insufficient_pattern_labels`.
+
+### 4.6a DBSCAN market retune (eps / min_pts)
+
+Hybrid loop: assess writes GPS tracks + request into `OCR_ASSESS_GPS_CACHE_PATH` → offline grid over `(clustering_radius_m, min_pts)` ∩ guardrails → re-assess with cached points → pattern Precision_S / Recall_S on `cancelled_offline`.
+
+Config: `policy.dbscan_retune` (default `mode: shadow`). When `mode: apply` (or `POST` with `"mode":"apply"`), overlay writes automatically if gates + cooldown pass (same learning gates as the threshold tuner). Autoscale / dwell factors still apply on top of retuned refs.
+
+```bash
+# Shadow first (no overlay write)
+curl -X POST localhost:8000/v1/tuning/dbscan-retune \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL"}'
+curl 'localhost:8000/v1/tuning/dbscan-retune/latest?region_code=PH&city_code=MNL'
+
+# After review: apply once (or set policy.dbscan_retune.mode=apply)
+curl -X POST localhost:8000/v1/tuning/dbscan-retune \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL","mode":"apply"}'
+```
+
+Optional tick: `dbscan_retune.on_tick: true` with `OCR_CONTROL_PLANE_TICK_SECONDS > 0`.
+
+Does **not** add a new clusterer or cross-order geo clustering — only retunes v5 per-trip DBSCAN refs.
 
 ### 4.7 Recommended tuning loop (human + auto)
 

@@ -191,6 +191,18 @@ learning:
       score_min: 0.70
     selective_theft:
       score_min: 0.70
+# Market retune of v5 DBSCAN eps + min_pts (default shadow; apply auto-writes).
+dbscan_retune:
+  mode: shadow
+  on_tick: false
+  cooldown_minutes: 1440
+  min_labeled: 15
+  min_recall_lift: 0.01
+  cache_retention_days: 30
+  holdout_fraction: 0.3
+  grid:
+    clustering_radius_m: [30, 40, 50, 60, 80]
+    min_pts: [5, 7, 9, 11, 15]
 routing:
   # Prioritized review routing from attention_score + flags (downstream may use queue).
   p1_attention_min: 200

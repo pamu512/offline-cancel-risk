@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 from typing import Any
 
 from fastapi import APIRouter, HTTPException, Request
@@ -7,6 +8,10 @@ from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult, OutcomeIngestRequest
 from offline_cancel_risk.control_plane.cycle import run_metrics_and_tune
+from offline_cancel_risk.control_plane.dbscan_retune import (
+    DbscanRetuneContext,
+    run_dbscan_retune,
+)
 from offline_cancel_risk.features.chat_signals import (
     instant_chat_risk,
     normalize_chat_signals,
@@ -73,6 +78,12 @@ class ClawbackRequest(BaseModel):
 class TuningRunRequest(BaseModel):
     region_code: str
     city_code: str = ""
+
+
+class DbscanRetuneRequest(BaseModel):
+    region_code: str
+    city_code: str = ""
+    mode: str | None = None
 
 
 class MarketplaceEventIngest(BaseModel):
@@ -152,6 +163,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             chat_store=getattr(request.app.state, "chat_store", None),
             anomalies=getattr(request.app.state, "anomalies", None),
             outcomes=getattr(request.app.state, "outcomes", None),
+            gps_cache=getattr(request.app.state, "gps_cache", None),
         )
     else:
         queue.schedule(job_id)
@@ -956,6 +968,49 @@ async def run_tuning(body: TuningRunRequest, request: Request) -> dict[str, Any]
         city_code=body.city_code,
         reason="tuning_run",
     )
+
+
+@router.post("/tuning/dbscan-retune")
+async def post_dbscan_retune(
+    body: DbscanRetuneRequest, request: Request
+) -> dict[str, Any]:
+    """Grid-search market DBSCAN eps/min_pts from labeled GPS cache (shadow by default)."""
+    _require_auth(request)
+    store = getattr(request.app.state, "dbscan_retune_store", None)
+    gps_cache = getattr(request.app.state, "gps_cache", None)
+    if gps_cache is None:
+        raise HTTPException(status_code=503, detail="gps cache unavailable")
+    ctx = DbscanRetuneContext(
+        base_policy=request.app.state.policy,
+        guardrails=request.app.state.guardrails,
+        overlays=request.app.state.overlays,
+        audit=request.app.state.audit,
+        hardgates=request.app.state.hardgates,
+        gps_cache=gps_cache,
+        feedback=request.app.state.table.list_feedback(),
+        region_code=body.region_code,
+        city_code=body.city_code,
+        mode_override=body.mode,
+        run_store=store,
+    )
+    # Retuner uses asyncio.run internally; keep it off the request event loop.
+    return await asyncio.to_thread(run_dbscan_retune, ctx)
+
+
+@router.get("/tuning/dbscan-retune/latest")
+async def get_dbscan_retune_latest(
+    request: Request,
+    region_code: str,
+    city_code: str = "",
+) -> dict[str, Any]:
+    _require_auth(request)
+    store = getattr(request.app.state, "dbscan_retune_store", None)
+    if store is None:
+        raise HTTPException(status_code=404, detail="dbscan retune store unavailable")
+    row = store.latest(region_code, city_code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no retune run for market")
+    return row
 
 
 @router.get("/tuning/suggestions")

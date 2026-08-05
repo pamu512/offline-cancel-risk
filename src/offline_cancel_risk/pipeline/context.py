@@ -11,6 +11,7 @@ from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.gps_cache import AssessGpsCache
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
 from offline_cancel_risk.models.metrics import ShadowMetricsStore
@@ -51,6 +52,7 @@ class AssessContext:
     chat_store: ChatSignalPort | None = None
     anomalies: EntityAnomalyPort | None = None
     outcomes: OutcomeStore | None = None
+    gps_cache: AssessGpsCache | None = None
 
     # prepare / serving
     phash: str = ""

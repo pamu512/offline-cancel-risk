@@ -21,6 +21,8 @@ from offline_cancel_risk.features.chat_signals import ChatSignalStore
 from offline_cancel_risk.features.device_graph import DeviceGraphStore
 from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.gps_cache import AssessGpsCache
+from offline_cancel_risk.control_plane.dbscan_retune import DbscanRetuneStore
 from offline_cancel_risk.control_plane.forecast import SupplyForecastStore
 from offline_cancel_risk.control_plane.hardgates import EnforcementHardgateStore
 from offline_cancel_risk.control_plane.leader import FileLeaderLock
@@ -77,6 +79,8 @@ def create_app(
     forecast_store = SupplyForecastStore(cp_path)
     hardgate_store = EnforcementHardgateStore(cp_path)
     label_metrics_store = LabelMetricsStore(cp_path)
+    gps_cache = AssessGpsCache(settings.assess_gps_cache_path)
+    dbscan_retune_store = DbscanRetuneStore(cp_path)
     operating_point_cfg = load_policy(settings.operating_point_path)
     ticket_store = LabelTicketStore(
         settings.label_tickets_path,
@@ -117,6 +121,8 @@ def create_app(
             "hardgates": hardgate_store,
             "label_metrics": label_metrics_store,
             "op_cfg": operating_point_cfg,
+            "gps_cache": gps_cache,
+            "dbscan_retune_store": dbscan_retune_store,
         },
         table=table_pub,
         tickets=ticket_store,
@@ -147,6 +153,7 @@ def create_app(
                     chat_store=chat_store,
                     anomalies=anomaly_store,
                     outcomes=outcome_store,
+                    gps_cache=gps_cache,
                 )
             )
         control_loop.start()
@@ -183,6 +190,8 @@ def create_app(
     app.state.chat_store = chat_store
     app.state.anomalies = anomaly_store
     app.state.outcomes = outcome_store
+    app.state.gps_cache = gps_cache
+    app.state.dbscan_retune_store = dbscan_retune_store
     app.state.control_loop = control_loop
     app.state.gates = gates
     app.state.queue = queue

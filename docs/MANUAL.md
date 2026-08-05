@@ -189,9 +189,9 @@ Primary goal: **~0.98 precision on the pattern cohort** \(S\) (`policy.learning`
 |---|---|
 | Sampler | ~70% `pattern_mass` tickets (`pattern_mass_fraction`) |
 | Tuner | Precision-constrained threshold search on \(S\); surplus `min_recall` is soft |
-| DBSCAN | Keep v5 per-trip clustering; retune `eps`/`min_pts` only via overlays (no new clusterer) |
+| DBSCAN | Keep v5 per-trip clustering; market retune via `POST /v1/tuning/dbscan-retune` (default shadow) |
 
-See [OPS §4.4](OPS.md#44-learning-objective-pattern-precision) and [learning-objective design](superpowers/specs/2026-08-03-learning-objective-design.md).
+See [OPS §4.4](OPS.md#44-learning-objective-pattern-precision), [OPS §4.6a](OPS.md#46a-dbscan-market-retune-eps--min_pts), and [learning-objective design](superpowers/specs/2026-08-03-learning-objective-design.md).
 
 ### 4.4 Adaptive dwell (short)
 
