@@ -12,6 +12,7 @@ from offline_cancel_risk.features.device_graph import DeviceGraphStore
 from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.gps_cache import AssessGpsCache
 from offline_cancel_risk.feedback.sampler import safe_inline_sample
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController, in_canary_cohort
@@ -55,6 +56,7 @@ async def assess_order(
     chat_store: ChatSignalStore | None = None,
     anomalies: EntityAnomalyStore | None = None,
     outcomes: OutcomeStore | None = None,
+    gps_cache: AssessGpsCache | None = None,
     feature_sink: dict[str, float] | None = None,
 ) -> AssessmentResult:
     if overlays is not None:
@@ -114,6 +116,7 @@ async def assess_order(
         chat_store=chat_store,
         anomalies=anomalies,
         outcomes=outcomes,
+        gps_cache=gps_cache,
         phash=phash,
         serving_model_id=serving_model_id,
         champion_rec=champion_rec,

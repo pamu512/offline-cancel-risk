@@ -20,6 +20,7 @@ from offline_cancel_risk.features.device_graph import DeviceGraphStore
 from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.gps_cache import AssessGpsCache
 from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
@@ -177,6 +178,7 @@ class SqliteAssessJobQueue:
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
         outcomes: OutcomeStore | None = None,
+        gps_cache: AssessGpsCache | None = None,
     ) -> AssessJob:
         job = self.get(job_id)
         if job is None:
@@ -207,6 +209,7 @@ class SqliteAssessJobQueue:
                 chat_store=chat_store,
                 anomalies=anomalies,
                 outcomes=outcomes,
+                gps_cache=gps_cache,
             )
             job.status = "done"
             job.error = None
@@ -238,6 +241,7 @@ class SqliteAssessJobQueue:
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
         outcomes: OutcomeStore | None = None,
+        gps_cache: AssessGpsCache | None = None,
     ) -> None:
         while True:
             job_id = self._claim_next()
@@ -265,4 +269,5 @@ class SqliteAssessJobQueue:
                 chat_store=chat_store,
                 anomalies=anomalies,
                 outcomes=outcomes,
+                gps_cache=gps_cache,
             )

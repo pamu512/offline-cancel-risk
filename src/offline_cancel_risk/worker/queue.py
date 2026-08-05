@@ -16,6 +16,7 @@ from offline_cancel_risk.features.device_graph import DeviceGraphStore
 from offline_cancel_risk.features.device_store import DeviceIntegrityStore
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
+from offline_cancel_risk.features.gps_cache import AssessGpsCache
 from offline_cancel_risk.feedback.sampler import bias_hints_from_metrics
 from offline_cancel_risk.feedback.tickets import LabelTicketStore
 from offline_cancel_risk.models.canary import CanaryController
@@ -76,6 +77,7 @@ class AssessJobQueue:
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
         outcomes: OutcomeStore | None = None,
+        gps_cache: AssessGpsCache | None = None,
     ) -> AssessJob:
         job = self._jobs[job_id]
         job.status = "running"
@@ -104,6 +106,7 @@ class AssessJobQueue:
                 chat_store=chat_store,
                 anomalies=anomalies,
                 outcomes=outcomes,
+                gps_cache=gps_cache,
             )
             job.status = "done"
         except Exception as exc:  # noqa: BLE001 — job boundary; surface as failed status
@@ -133,6 +136,7 @@ class AssessJobQueue:
         chat_store: ChatSignalStore | None = None,
         anomalies: EntityAnomalyStore | None = None,
         outcomes: OutcomeStore | None = None,
+        gps_cache: AssessGpsCache | None = None,
     ) -> None:
         while True:
             job_id = await self._queue.get()
@@ -158,6 +162,7 @@ class AssessJobQueue:
                     chat_store=chat_store,
                     anomalies=anomalies,
                     outcomes=outcomes,
+                    gps_cache=gps_cache,
                 )
             finally:
                 self._queue.task_done()

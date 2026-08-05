@@ -11,6 +11,11 @@ from offline_cancel_risk.control_plane.cycle import (
     markets_from_assessments,
     run_metrics_and_tune,
 )
+from offline_cancel_risk.control_plane.dbscan_retune import (
+    DbscanRetuneContext,
+    dbscan_retune_cfg,
+    run_dbscan_retune,
+)
 from offline_cancel_risk.control_plane.leader import FileLeaderLock
 from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
@@ -86,6 +91,13 @@ class ControlPlaneLoop:
         except Exception:
             _LOG.exception("Debounced control-plane flush failed")
 
+    def _tune_kwargs(self) -> dict[str, Any]:
+        return {
+            k: v
+            for k, v in self._run_kwargs.items()
+            if k not in {"gps_cache", "dbscan_retune_store"}
+        }
+
     async def flush_pending(self, *, reason: str) -> list[dict[str, Any]]:
         if not self._is_leader():
             return []
@@ -97,7 +109,7 @@ class ControlPlaneLoop:
             try:
                 results.append(
                     run_metrics_and_tune(
-                        **self._run_kwargs,
+                        **self._tune_kwargs(),
                         table=self._table,
                         region_code=region,
                         city_code=city,
@@ -119,6 +131,36 @@ class ControlPlaneLoop:
                 raise
             except Exception:
                 _LOG.exception("Control-plane tick failed")
+
+    async def _maybe_dbscan_retune(self, markets: list[tuple[str, str]]) -> None:
+        policy = self._run_kwargs.get("policy") or {}
+        cfg = dbscan_retune_cfg(policy)
+        if not cfg.get("on_tick"):
+            return
+        gps_cache = self._run_kwargs.get("gps_cache")
+        if gps_cache is None:
+            return
+        for region, city in markets:
+            if not region:
+                continue
+            try:
+                ctx = DbscanRetuneContext(
+                    base_policy=policy,
+                    guardrails=self._run_kwargs["guardrails"],
+                    overlays=self._run_kwargs["overlays"],
+                    audit=self._run_kwargs["audit"],
+                    hardgates=self._run_kwargs["hardgates"],
+                    gps_cache=gps_cache,
+                    feedback=self._table.list_feedback(),
+                    region_code=region,
+                    city_code=city,
+                    run_store=self._run_kwargs.get("dbscan_retune_store"),
+                )
+                await asyncio.to_thread(run_dbscan_retune, ctx)
+            except Exception:
+                _LOG.exception(
+                    "DBSCAN retune tick failed for market=%s/%s", region, city
+                )
 
     async def _run_tick(self) -> None:
         if not self._is_leader():
@@ -143,7 +185,7 @@ class ControlPlaneLoop:
             for region, city in markets:
                 try:
                     run_metrics_and_tune(
-                        **self._run_kwargs,
+                        **self._tune_kwargs(),
                         table=self._table,
                         region_code=region,
                         city_code=city,
@@ -153,6 +195,7 @@ class ControlPlaneLoop:
                     _LOG.exception(
                         "Scheduled tune failed for market=%s/%s", region, city
                     )
+            await self._maybe_dbscan_retune(markets)
 
     def start(self) -> None:
         if self._tick_s > 0 and (

@@ -248,3 +248,18 @@ async def run_geometry_stage(ctx: AssessContext) -> None:
             exclude_order_id=req.order_display_id,
         )
     ctx.driver_chain_count = max(len(driver_ids), cross_order_chain + 1)
+
+    # Assess-time GPS replay cache for market DBSCAN retune (skip empty tracks).
+    if ctx.gps_cache is not None and window.points:
+        ret_days = int(
+            (policy.get("dbscan_retune") or {}).get("cache_retention_days", 30)
+        )
+        ctx.gps_cache.prune(ret_days)
+        ctx.gps_cache.put(
+            order_display_id=req.order_display_id,
+            assessment_generation=int(ctx.generation),
+            region_code=req.region_code or "",
+            city_code=req.city_code or "",
+            request=req.model_dump(mode="json"),
+            points=list(window.points),
+        )
