@@ -181,6 +181,18 @@ Guardrails: `config/policy_guardrails.default.yaml`. Invalid overlays → HTTP 4
 
 Do **not** flip `ear.mode` / global baselines to apply on day one without market shadow review.
 
+### 4.3a Learning objective (pattern precision)
+
+Primary goal: **~0.98 precision on the pattern cohort** \(S\) (`policy.learning`), then maximize recall **on \(S\)**. Not global F1 and not the exotic 2% tail.
+
+| Piece | Behavior |
+|---|---|
+| Sampler | ~70% `pattern_mass` tickets (`pattern_mass_fraction`) |
+| Tuner | Precision-constrained threshold search on \(S\); surplus `min_recall` is soft |
+| DBSCAN | Keep v5 per-trip clustering; retune `eps`/`min_pts` only via overlays (no new clusterer) |
+
+See [OPS §4.4](OPS.md#44-learning-objective-pattern-precision) and [learning-objective design](superpowers/specs/2026-08-03-learning-objective-design.md).
+
 ### 4.4 Adaptive dwell (short)
 
 Target dwell \(D = D_{base} \cdot f_{place} \cdot f_{vehicle}\).  
