@@ -21,6 +21,8 @@ from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.main import create_app
 from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.scoring.calibration import (
+    apply_calibrated_score,
+    brier_score,
     expected_calibration_error,
     fit_calibrator,
     predict_calibrated,
@@ -31,7 +33,24 @@ from offline_cancel_risk.settings import Settings, load_policy
 def test_ece_perfect_is_near_zero():
     probs = [0.1, 0.1, 0.9, 0.9]
     labels = [0, 0, 1, 1]
-    assert expected_calibration_error(probs, labels, n_bins=2) <= 0.1
+    assert expected_calibration_error(probs, labels, n_bins=2, strategy="equal") <= 0.1
+
+
+def test_quantile_ece_exposes_miscalibration_equal_width_hides():
+    """Scores clustered in one equal-width bin can fake a low ECE; quantile does not."""
+    probs = [0.501 + 0.001 * i for i in range(30)]  # all in [0.5, 0.6)
+    labels = [0] * 15 + [1] * 15
+    e_equal = expected_calibration_error(probs, labels, n_bins=10, strategy="equal")
+    e_q = expected_calibration_error(probs, labels, n_bins=5, strategy="quantile")
+    assert e_equal < 0.05
+    assert e_q > 0.2
+
+
+def test_brier_and_apply_discount():
+    assert brier_score([0.0, 1.0], [0, 1]) == pytest.approx(0.0)
+    assert apply_calibrated_score(
+        p=0.8, scores_raw=1.0, scores_current=0.5
+    ) == pytest.approx(0.4)
 
 
 def test_fit_picks_platt_below_threshold():
@@ -81,7 +100,6 @@ def _assess(oid: str, raw: float) -> dict:
 
 def _policy(*, mode: str = "shadow", cooldown_minutes: int = 0) -> dict[str, Any]:
     policy = deepcopy(load_policy("config/policy.default.yaml"))
-    # platt_max_n low → isotonic; narrow S band + sklearn Platt L2 won't clear max_ece.
     policy["calibration"] = {
         "mode": mode,
         "on_tick": False,
@@ -89,8 +107,10 @@ def _policy(*, mode: str = "shadow", cooldown_minutes: int = 0) -> dict[str, Any
         "platt_max_n": 10,
         "holdout_fraction": 0.3,
         "max_ece": 0.05,
+        "max_brier": 0.25,
         "cooldown_minutes": cooldown_minutes,
         "ece_bins": 10,
+        "ece_strategy": "quantile",
     }
     return policy
 
@@ -116,12 +136,12 @@ def _fit_ctx(
     )
 
 
-def _separable_s_cohort(n: int = 40) -> tuple[list[dict], list[dict]]:
+def _separable_full_support(n: int = 40) -> tuple[list[dict], list[dict]]:
     assessments: list[dict] = []
     feedback: list[dict] = []
     for i in range(n):
         high = i < n // 2
-        raw = 0.97 if high else 0.86
+        raw = 0.92 if high else 0.15
         oid = f"o{i:03d}"
         assessments.append(_assess(oid, raw))
         feedback.append(
@@ -133,7 +153,7 @@ def _separable_s_cohort(n: int = 40) -> tuple[list[dict], list[dict]]:
     return assessments, feedback
 
 
-def test_fit_rejects_insufficient_pattern_labels(tmp_path: Path):
+def test_fit_rejects_insufficient_labels(tmp_path: Path):
     assessments = [_assess(f"o{i}", 0.9) for i in range(5)]
     feedback = [
         {"order_display_id": f"o{i}", "labels": {"cancelled_offline": i % 2}}
@@ -146,8 +166,17 @@ def test_fit_rejects_insufficient_pattern_labels(tmp_path: Path):
     assert ctx.calibrators.get("PH", "MNL", "cancelled_offline") is None
 
 
-def test_fit_persists_when_ece_ok(tmp_path: Path):
-    assessments, feedback = _separable_s_cohort(40)
+def test_fit_rejects_empty_holdout(tmp_path: Path):
+    assessments, feedback = _separable_full_support(40)
+    ctx = _fit_ctx(tmp_path, assessments=assessments, feedback=feedback)
+    ctx.base_policy["calibration"]["holdout_fraction"] = 0.0
+    report = run_calibration_fit(ctx)
+    assert report["decision"] == "rejected"
+    assert report["reason"] == "empty_holdout"
+
+
+def test_fit_persists_when_holdout_ok(tmp_path: Path):
+    assessments, feedback = _separable_full_support(40)
     ctx = _fit_ctx(tmp_path, assessments=assessments, feedback=feedback, mode="shadow")
     report = run_calibration_fit(ctx)
     assert report["decision"] == "fitted"
@@ -155,13 +184,16 @@ def test_fit_persists_when_ece_ok(tmp_path: Path):
     assert row is not None
     assert row["support"] >= 30
     assert float(row["ece"]) <= 0.05
+    head = report["heads"]["cancelled_offline"]
+    assert "brier" in head
+    assert float(head["brier"]) <= 0.25
     latest = ctx.run_store.latest("PH", "MNL")
     assert latest is not None
     assert latest["decision"] == "fitted"
 
 
 def test_fit_rejects_high_ece(tmp_path: Path, monkeypatch):
-    assessments, feedback = _separable_s_cohort(40)
+    assessments, feedback = _separable_full_support(40)
     ctx = _fit_ctx(tmp_path, assessments=assessments, feedback=feedback)
     ctx.calibrators.upsert(
         region_code="PH",
@@ -186,7 +218,7 @@ def test_fit_rejects_high_ece(tmp_path: Path, monkeypatch):
 
 
 def test_fit_respects_cooldown(tmp_path: Path):
-    assessments, feedback = _separable_s_cohort(40)
+    assessments, feedback = _separable_full_support(40)
     ctx = _fit_ctx(
         tmp_path,
         assessments=assessments,
@@ -333,7 +365,6 @@ async def test_assess_apply_replaces_scores_keeps_raw(tmp_path: Path):
 
     meta = result.calibration_meta["cancelled_offline"]
     assert meta["applied"] is True
-    assert result.scores.cancelled_offline == pytest.approx(float(meta["p"]))
     assert result.scores_raw is not None
     expected_p = predict_calibrated(
         {
@@ -342,7 +373,13 @@ async def test_assess_apply_replaces_scores_keeps_raw(tmp_path: Path):
         },
         float(result.scores_raw.cancelled_offline),
     )
-    assert result.scores.cancelled_offline == pytest.approx(expected_p)
+    expected = apply_calibrated_score(
+        p=expected_p,
+        scores_raw=float(result.scores_raw.cancelled_offline),
+        scores_current=float(result.scores_raw.cancelled_offline),  # no discount
+    )
+    assert result.scores.cancelled_offline == pytest.approx(expected)
+    assert result.scores.cancelled_offline == pytest.approx(float(meta["score_applied"]))
     assert result.scores.cancelled_offline != pytest.approx(
         float(result.scores_raw.cancelled_offline)
     )

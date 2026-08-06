@@ -12,8 +12,9 @@ from typing import Any
 
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
 from offline_cancel_risk.control_plane.metrics import holdout_split, resolve_scores
-from offline_cancel_risk.control_plane.patterns import in_pattern_cohort, learning_cfg
+from offline_cancel_risk.control_plane.patterns import learning_cfg
 from offline_cancel_risk.scoring.calibration import (
+    brier_score,
     calibration_cfg,
     expected_calibration_error,
     fit_calibrator,
@@ -225,6 +226,8 @@ def _labeled_pairs_for_head(
     region: str,
     city: str,
 ) -> list[dict[str, Any]]:
+    """All labeled market pairs (full score support — not pattern cohort only)."""
+    del policy  # reserved for future filters; fit uses full labeled support
     by_id = {a["order_display_id"]: a for a in assessments}
     pairs: list[dict[str, Any]] = []
     for fb in feedback:
@@ -247,9 +250,6 @@ def _labeled_pairs_for_head(
         if head not in labels or labels[head] is None:
             continue
         scores = resolve_scores(assess, blend=None)
-        view = {**assess, "scores": scores}
-        if not in_pattern_cohort(view, head, policy):
-            continue
         pairs.append(
             {
                 "order_display_id": oid,
@@ -312,7 +312,7 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
         head_info: dict[str, Any] = {"support": len(pairs), "min_support": min_support}
         if len(pairs) < min_support:
             head_info.update(
-                {"decision": "rejected", "reason": "insufficient_pattern_labels"}
+                {"decision": "rejected", "reason": "insufficient_labels"}
             )
             head_reports[head] = head_info
             continue
@@ -320,7 +320,13 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
         train_rows, hold_rows = holdout_split(
             pairs, holdout_fraction=float(cfg["holdout_fraction"])
         )
-        eval_rows = hold_rows if hold_rows else train_rows
+        if not hold_rows:
+            head_info.update(
+                {"decision": "rejected", "reason": "empty_holdout"}
+            )
+            head_reports[head] = head_info
+            continue
+
         train_xs = [float(r["x"]) for r in train_rows]
         train_ys = [int(r["y"]) for r in train_rows]
         try:
@@ -334,28 +340,38 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
             head_reports[head] = head_info
             continue
 
-        hold_xs = [float(r["x"]) for r in eval_rows]
-        hold_ys = [int(r["y"]) for r in eval_rows]
+        hold_xs = [float(r["x"]) for r in hold_rows]
+        hold_ys = [int(r["y"]) for r in hold_rows]
         hold_probs = [predict_calibrated(model, x) for x in hold_xs]
         ece = expected_calibration_error(
-            hold_probs, hold_ys, n_bins=int(cfg["ece_bins"])
+            hold_probs,
+            hold_ys,
+            n_bins=int(cfg["ece_bins"]),
+            strategy=str(cfg["ece_strategy"]),
         )
+        brier = brier_score(hold_probs, hold_ys)
         head_info.update(
             {
                 "method": model["method"],
                 "ece": ece,
+                "brier": brier,
                 "train_support": len(train_xs),
-                "holdout_support": len(eval_rows),
+                "holdout_support": len(hold_rows),
             }
         )
         if ece > float(cfg["max_ece"]) + 1e-12:
             head_info.update({"decision": "rejected", "reason": "high_ece"})
             head_reports[head] = head_info
             continue
+        if brier > float(cfg["max_brier"]) + 1e-12:
+            head_info.update({"decision": "rejected", "reason": "high_brier"})
+            head_reports[head] = head_info
+            continue
 
         candidates[head] = {
             "model": model,
             "ece": ece,
+            "brier": brier,
             "support": len(pairs),
             "head_info": head_info,
         }
@@ -366,10 +382,14 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
 
     if not candidates:
         reasons = {h: hr.get("reason") for h, hr in head_reports.items()}
-        if all(r == "insufficient_pattern_labels" for r in reasons.values()):
-            reason = "insufficient_pattern_labels"
+        if all(r == "insufficient_labels" for r in reasons.values()):
+            reason = "insufficient_labels"
         elif any(r == "high_ece" for r in reasons.values()):
             reason = "high_ece"
+        elif any(r == "high_brier" for r in reasons.values()):
+            reason = "high_brier"
+        elif any(r == "empty_holdout" for r in reasons.values()):
+            reason = "empty_holdout"
         else:
             reason = "no_head_passed_gates"
         report.update({"decision": "rejected", "reason": reason})
@@ -406,6 +426,7 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
     for head, cand in candidates.items():
         model = cand["model"]
         ece = float(cand["ece"])
+        brier = float(cand["brier"])
         support = int(cand["support"])
         ctx.calibrators.upsert(
             region_code=region,
@@ -416,22 +437,23 @@ def run_calibration_fit(ctx: CalibrationFitContext) -> dict[str, Any]:
             ece=ece,
             support=support,
         )
-        cand["head_info"].update({"decision": "fitted", "reason": "ece_ok"})
+        cand["head_info"].update({"decision": "fitted", "reason": "holdout_ok"})
         after_cal[head] = {
             "method": model["method"],
             "ece": ece,
+            "brier": brier,
             "support": support,
             "params": model["params"],
         }
 
-    report.update({"decision": "fitted", "reason": "ece_ok"})
+    report.update({"decision": "fitted", "reason": "holdout_ok"})
     ctx.audit.append(
         actor="calibrator",
         action="apply",
         region_code=region,
         city_code=city,
         decision="accepted",
-        reason="ece_ok",
+        reason="holdout_ok",
         after={"calibration": after_cal},
         metrics_after={"heads": head_reports},
     )

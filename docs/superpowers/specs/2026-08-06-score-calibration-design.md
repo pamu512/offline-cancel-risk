@@ -12,11 +12,11 @@ Assess scores are soft rule/ML blend cutoffs, not probabilities. Thresholds, EAR
 ## 2. Goals
 
 - Produce a **single calibrated score** \(p \in [0,1]\) per head used for **flags, EAR, and metrics** when apply mode is on.
-- Fit **per head × market** (`region_code` / `city_code`) on the **pattern cohort \(S\)** only.
+- Fit **per head × market** (`region_code` / `city_code`) on **all labeled** pairs (full score support).
 - **Auto method by support:** Platt (logistic) when \(n <\) `platt_max_n`; isotonic otherwise.
-- **Fit on `scores_raw`** (pre-baseline); **apply after baselines, before thresholds**.
+- **Fit on `scores_raw`** (pre-baseline); **apply after baselines, before thresholds**, preserving baseline discount: `score_applied = p · (score / scores_raw)`.
 - Default **`calibration.mode: shadow`**; switch to **`apply`** via policy or API (EAR / DBSCAN retune pattern).
-- Holdout **ECE ≤ `max_ece`** (default 0.05) to persist a calibrator.
+- Holdout **must be non-empty**. Gates: **quantile ECE** ≤ `max_ece` and **Brier** ≤ `max_brier`.
 
 ### Non-goals
 
@@ -26,7 +26,7 @@ Assess scores are soft rule/ML blend cutoffs, not probabilities. Thresholds, EAR
 - Amount-weighted labels
 - New clustering / DBSCAN changes
 - Changing threshold-tuner or sampler objectives
-
+- Claiming sampler labels equal population probabilities (ops must treat \(p\) as label-conditional)
 ## 3. Architecture
 
 ```
@@ -48,12 +48,14 @@ fit:     assessments ⋈ labels → filter S → holdout → Platt|isotonic → 
 calibration:
   mode: shadow          # shadow | apply | off
   on_tick: false
-  min_labeled: 30       # min pattern-cohort pairs to fit
+  min_labeled: 30       # min labeled pairs to fit
   platt_max_n: 80       # n < this → Platt; else isotonic
   holdout_fraction: 0.3
   max_ece: 0.05
+  max_brier: 0.25
   cooldown_minutes: 1440
   ece_bins: 10
+  ece_strategy: quantile  # quantile|equal
 ```
 
 Settings: `OCR_CALIBRATORS_PATH` (default under `data/`, or sibling of control-plane DB — implementation picks one path; prefer dedicated `data/calibrators.db`).
@@ -62,27 +64,25 @@ Settings: `OCR_CALIBRATORS_PATH` (default under `data/`, or sibling of control-p
 
 Per head × market:
 
-1. Join latest assessments ↔ feedback labels for that market.
-2. Restrict to pattern cohort \(S\) using existing `in_pattern_cohort`, with scores resolved preferentially from **`scores_raw`** (same preference as label metrics).
-3. If \(|S| <\) `min_labeled` → reject; keep prior calibrator if any.
-4. Deterministic holdout split (`holdout_fraction`, same hash style as tuner).
-5. Train input \(x =\) `scores_raw[head]`, target \(y =\) binary label for head.
-6. Method: **Platt** if train \(n <\) `platt_max_n`, else **isotonic** (sklearn `LogisticRegression` / `IsotonicRegression`; clip predictions to \([0,1]\)).
-7. Compute holdout ECE with `ece_bins` equal-width bins on \([0,1]\). Persist only if ECE ≤ `max_ece`.
-8. Respect `cooldown_minutes` between successful writes; audit actor `calibrator`.
-9. Record run history (decision, reason, method, ECE, support) for `GET .../latest`.
+1. Join latest assessments ↔ feedback labels for that market (full score support).
+2. If support < `min_labeled` (and `learning.min_pattern_support`) → reject; keep prior calibrator if any.
+3. Deterministic holdout split (`holdout_fraction`). **Reject if holdout empty** (no train-ECE fallback).
+4. Train input \(x =\) `scores_raw[head]`, target \(y =\) binary label for head.
+5. Method: **Platt** if train \(n <\) `platt_max_n`, else **isotonic**.
+6. Holdout **quantile ECE** and **Brier**; persist only if both ≤ configured maxima.
+7. Respect `cooldown_minutes`; audit actor `calibrator`.
+8. Record run history (decision, reason, method, ECE, Brier, support) for `GET .../latest`.
 
 ## 6. Assess apply
 
 After baselines, for each head:
 
-1. If a calibrator row exists: \(p_h = \mathrm{calib}_h(\texttt{scores_raw}[h])\) (fit domain = raw).
-2. Always populate `calibration_meta[h]` with `{p, method, mode, ece, support, applied: bool, skip_reason?}`.
-3. **`mode: shadow` / `off` / missing calibrator:** leave post-baseline `scores` unchanged (identity for live path).
-4. **`mode: apply` and calibrator present:** set `scores[h] = p_h`. Flags and EAR consume calibrated `scores`.
-5. **`scores_raw` never calibrated** — permanent pre-discount blend for learning joins and future fits.
-
-**Domain note:** Fit uses raw; apply replaces post-baseline `scores` with \(p\) from raw. When baseline discount is identity (common), domains match. When a discount fired, meta records that fact; v1 accepts this (no re-discount of \(p\)).
+1. If a calibrator row exists: \(p_h = \mathrm{calib}_h(\texttt{scores_raw}[h])\).
+2. `score_applied = apply_calibrated_score(p, scores_raw, scores)` preserves baseline discount.
+3. Populate `calibration_meta[h]` with `{p, score_applied, method, mode, ece, support, applied, baseline_discounted, …}`.
+4. **`mode: shadow` / `off` / missing:** leave post-baseline `scores` unchanged.
+5. **`mode: apply` and calibrator present:** set `scores[h] = score_applied`.
+6. **`scores_raw` never calibrated**.
 
 ## 7. Metrics & tuner interaction
 
@@ -92,11 +92,12 @@ After baselines, for each head:
 ## 8. Acceptance
 
 - Fit picks Platt vs isotonic by `platt_max_n`.
-- Thin \(S\) or ECE above gate → reject; no overwrite.
+- Fit uses full labeled support (not S-only); empty holdout rejects.
+- Thin labels / high quantile ECE / high Brier → reject; no overwrite.
 - Shadow: live flags/EAR unchanged vs pre-calibration; meta present when fit exists.
-- Apply: flags/EAR/metrics use \(p\); `scores_raw` unchanged.
+- Apply: flags/EAR use `score_applied` (p × baseline discount); `scores_raw` unchanged.
 - Cooldown honored; audit entries for accept/reject.
-- OPS + MANUAL: shadow → review ECE → set `apply` / call API; warn to retune thresholds after apply.
+- OPS + MANUAL: shadow → review ECE+Brier → set `apply` / call API; warn to retune thresholds after apply.
 
 ## 9. Docs
 

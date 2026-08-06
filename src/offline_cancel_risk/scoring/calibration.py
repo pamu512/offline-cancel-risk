@@ -18,25 +18,59 @@ def calibration_cfg(policy: dict[str, Any]) -> dict[str, Any]:
         "platt_max_n": int(raw.get("platt_max_n", 80)),
         "holdout_fraction": float(raw.get("holdout_fraction", 0.3)),
         "max_ece": float(raw.get("max_ece", 0.05)),
+        "max_brier": float(raw.get("max_brier", 0.25)),
         "cooldown_minutes": int(raw.get("cooldown_minutes", 1440)),
         "ece_bins": int(raw.get("ece_bins", 10)),
+        # quantile bins avoid empty mass when scores cluster (e.g. old S-only fits)
+        "ece_strategy": str(raw.get("ece_strategy", "quantile")).strip().lower(),
     }
 
 
-def expected_calibration_error(
-    probs: list[float], labels: list[int], *, n_bins: int
-) -> float:
+def brier_score(probs: list[float], labels: list[int]) -> float:
     if not probs:
         return 0.0
+    if len(probs) != len(labels):
+        raise ValueError("probs and labels must have the same length")
+    p = np.asarray(probs, dtype=float)
+    y = np.asarray(labels, dtype=float)
+    return float(np.mean((p - y) ** 2))
+
+
+def expected_calibration_error(
+    probs: list[float],
+    labels: list[int],
+    *,
+    n_bins: int,
+    strategy: str = "quantile",
+) -> float:
+    """ECE with equal-width or quantile probability bins.
+
+    Quantile bins put ~equal mass in each bin so clustered scores cannot
+    collapse into a single equal-width bin and fake a near-zero ECE.
+    """
+    if not probs:
+        return 0.0
+    if len(probs) != len(labels):
+        raise ValueError("probs and labels must have the same length")
     probs_arr = np.asarray(probs, dtype=float)
     labels_arr = np.asarray(labels, dtype=int)
     n_bins = max(1, int(n_bins))
-    bin_edges = np.linspace(0.0, 1.0, n_bins + 1)
     n = len(probs_arr)
+    strategy = (strategy or "quantile").strip().lower()
+
+    if strategy == "equal":
+        edges = np.linspace(0.0, 1.0, n_bins + 1)
+    else:
+        qs = np.linspace(0.0, 1.0, n_bins + 1)
+        edges = np.unique(np.quantile(probs_arr, qs))
+        if len(edges) < 2:
+            # All probs identical — single-bin ECE = |acc - conf|
+            return float(abs(float(labels_arr.mean()) - float(probs_arr.mean())))
+
     ece = 0.0
-    for i in range(n_bins):
-        lo, hi = bin_edges[i], bin_edges[i + 1]
-        if i == n_bins - 1:
+    for i in range(len(edges) - 1):
+        lo, hi = float(edges[i]), float(edges[i + 1])
+        if i == len(edges) - 2:
             mask = (probs_arr >= lo) & (probs_arr <= hi)
         else:
             mask = (probs_arr >= lo) & (probs_arr < hi)
@@ -98,11 +132,34 @@ def predict_calibrated(model: dict, x: float) -> float:
         coef = float(params["coef"][0])
         intercept = float(params["intercept"][0])
         z = coef * float(x) + intercept
-        p = 1.0 / (1.0 + np.exp(-z))
+        # Stable sigmoid (avoid overflow on extreme z).
+        if z >= 0:
+            p = 1.0 / (1.0 + np.exp(-z))
+        else:
+            ez = np.exp(z)
+            p = ez / (1.0 + ez)
     elif method == "isotonic":
         xt = np.asarray(params["X_thresholds"], dtype=float)
         yt = np.asarray(params["y_thresholds"], dtype=float)
-        p = float(np.interp(float(x), xt, yt))
+        if xt.size == 0:
+            p = 0.0
+        else:
+            p = float(np.interp(float(x), xt, yt))
     else:
         raise ValueError(f"unknown calibration method: {method}")
     return float(np.clip(p, 0.0, 1.0))
+
+
+def apply_calibrated_score(
+    *, p: float, scores_raw: float, scores_current: float
+) -> float:
+    """Map calibrated p back through any baseline discount on the live score.
+
+    discount = scores_current / scores_raw (1.0 when baselines did not fire).
+    """
+    raw = float(scores_raw)
+    cur = float(scores_current)
+    if abs(raw) <= 1e-12:
+        return float(np.clip(p, 0.0, 1.0))
+    discount = cur / raw
+    return float(np.clip(float(p) * discount, 0.0, 1.0))
