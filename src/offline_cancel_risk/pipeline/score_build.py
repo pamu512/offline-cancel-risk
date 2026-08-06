@@ -17,7 +17,11 @@ from offline_cancel_risk.features.evidence import build_evidence
 from offline_cancel_risk.pipeline.context import AssessContext
 from offline_cancel_risk.policy.routing import build_routing
 from offline_cancel_risk.scoring.blend import blend_scores
-from offline_cancel_risk.scoring.calibration import calibration_cfg, predict_calibrated
+from offline_cancel_risk.scoring.calibration import (
+    apply_calibrated_score,
+    calibration_cfg,
+    predict_calibrated,
+)
 from offline_cancel_risk.scoring.ear import compute_ear, resolve_recoverability
 from offline_cancel_risk.scoring.policy import apply_thresholds
 from offline_cancel_risk.scoring.rules import compute_rule_scores
@@ -186,7 +190,12 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
                 {"method": row["method"], "params": row["params"]},
                 float(ctx.scores_raw[head]),
             )
-            discounted = abs(float(ctx.scores[head]) - float(ctx.scores_raw[head])) > 1e-12
+            raw_v = float(ctx.scores_raw[head])
+            cur_v = float(ctx.scores[head])
+            discounted = abs(cur_v - raw_v) > 1e-12
+            applied_score = apply_calibrated_score(
+                p=p, scores_raw=raw_v, scores_current=cur_v
+            )
             meta = {
                 "p": p,
                 "method": row["method"],
@@ -195,9 +204,10 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
                 "support": row.get("support"),
                 "applied": False,
                 "baseline_discounted": discounted,
+                "score_applied": applied_score,
             }
             if mode == "apply":
-                ctx.scores[head] = p
+                ctx.scores[head] = applied_score
                 meta["applied"] = True
             ctx.calibration_meta[head] = meta
     ctx.flags = apply_thresholds(ctx.scores, policy)

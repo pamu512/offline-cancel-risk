@@ -396,17 +396,17 @@ Does **not** add a new clusterer or cross-order geo clustering — only retunes 
 
 ### 4.6b Score calibration (Platt / isotonic)
 
-Offline fit on pattern cohort \(S\) using `scores_raw` (pre-baseline). Assess runs calibration after baselines / before thresholds.
+Offline fit on **all labeled** market pairs using `scores_raw` (full score support — not pattern cohort only). Holdout must be non-empty. Gates: **quantile ECE** ≤ `max_ece` and **Brier** ≤ `max_brier`. Assess runs calibration after baselines / before thresholds; apply preserves baseline discount via `p * (score/score_raw)`.
 
 **Two separate knobs:**
 
 | Knob | What it does |
 |---|---|
-| `POST /v1/tuning/calibrate` `mode` | Fit control only. Default/shadow/apply all **upsert calibrators** to `OCR_CALIBRATORS_PATH` when ECE + cooldown pass. `mode: off` skips fit. **`mode: apply` on POST does not turn on live score replacement.** |
-| `policy.calibration.mode` (YAML or market overlay) | Assess-time behavior. Default `shadow` fills `calibration_meta` with `p` but leaves live `scores[h]` unchanged. **`apply`** replaces `scores[h]=p` (raw stays in `scores_raw`). |
+| `POST /v1/tuning/calibrate` `mode` | Fit control only. Default/shadow/apply all **upsert calibrators** when holdout ECE+Brier + cooldown pass. `mode: off` skips fit. **`mode: apply` on POST does not turn on live score replacement.** |
+| `policy.calibration.mode` (YAML or market overlay) | Assess-time behavior. Default `shadow` fills `calibration_meta` with `p` but leaves live `scores[h]` unchanged. **`apply`** sets `scores[h]=score_applied` (calibrated p × baseline discount); raw stays in `scores_raw`. |
 
 ```bash
-# Fit (default mode=shadow; upserts calibrators when ECE gate passes)
+# Fit (default mode=shadow; upserts calibrators when holdout gates pass)
 curl -X POST localhost:8000/v1/tuning/calibrate \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL"}'
@@ -417,7 +417,7 @@ curl -X POST localhost:8000/v1/tuning/calibrate \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL","mode":"apply"}'
 
-# After reviewing holdout ECE: enable live apply via policy overlay, then retune
+# After reviewing holdout ECE+Brier: enable live apply via policy overlay, then retune
 curl -X PUT localhost:8000/v1/policy/overlays \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL","overlay":{"calibration":{"mode":"apply"}}}'
@@ -426,7 +426,7 @@ curl -X POST localhost:8000/v1/tuning/run \
   -d '{"region_code":"PH","city_code":"MNL"}'
 ```
 
-Workflow: **fit → review ECE → set `policy.calibration.mode: apply` → retune thresholds** (calibrated scores shift the operating point).
+Workflow: **fit → review ECE+Brier → set `policy.calibration.mode: apply` → retune thresholds** (calibrated scores shift the operating point).
 
 After flipping apply or refreshing calibrators, re-assess orders that may be idempotency-cached: set `"force_reassess": true` on `POST /v1/assess` (bumps `assessment_generation`; see §3.1).
 
