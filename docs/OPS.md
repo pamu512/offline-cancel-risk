@@ -396,27 +396,41 @@ Does **not** add a new clusterer or cross-order geo clustering — only retunes 
 
 ### 4.6b Score calibration (Platt / isotonic)
 
-Offline fit on pattern cohort \(S\) using `scores_raw` (pre-baseline). Assess applies after baselines / before thresholds. Default `policy.calibration.mode: shadow` fills `calibration_meta` without changing live scores.
+Offline fit on pattern cohort \(S\) using `scores_raw` (pre-baseline). Assess runs calibration after baselines / before thresholds.
+
+**Two separate knobs:**
+
+| Knob | What it does |
+|---|---|
+| `POST /v1/tuning/calibrate` `mode` | Fit control only. Default/shadow/apply all **upsert calibrators** to `OCR_CALIBRATORS_PATH` when ECE + cooldown pass. `mode: off` skips fit. **`mode: apply` on POST does not turn on live score replacement.** |
+| `policy.calibration.mode` (YAML or market overlay) | Assess-time behavior. Default `shadow` fills `calibration_meta` with `p` but leaves live `scores[h]` unchanged. **`apply`** replaces `scores[h]=p` (raw stays in `scores_raw`). |
 
 ```bash
-# Shadow fit (persist calibrator when ECE gate passes; scores unchanged)
+# Fit (default mode=shadow; upserts calibrators when ECE gate passes)
 curl -X POST localhost:8000/v1/tuning/calibrate \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL"}'
 curl 'localhost:8000/v1/tuning/calibrate/latest?region_code=PH&city_code=MNL'
 
-# After reviewing holdout ECE: flip apply (or POST mode=apply)
-# Then retune thresholds — calibrated scores shift the operating point.
+# Re-fit with explicit mode (still only persists calibrators — not live apply)
 curl -X POST localhost:8000/v1/tuning/calibrate \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL","mode":"apply"}'
-# set policy.calibration.mode=apply for the market, then:
+
+# After reviewing holdout ECE: enable live apply via policy overlay, then retune
+curl -X PUT localhost:8000/v1/policy/overlays \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL","overlay":{"calibration":{"mode":"apply"}}}'
 curl -X POST localhost:8000/v1/tuning/run \
   -H 'Content-Type: application/json' \
   -d '{"region_code":"PH","city_code":"MNL"}'
 ```
 
-Workflow: **shadow fit → review ECE → `mode: apply` → retune thresholds**. Optional tick: `calibration.on_tick: true` with `OCR_CONTROL_PLANE_TICK_SECONDS > 0`.
+Workflow: **fit → review ECE → set `policy.calibration.mode: apply` → retune thresholds** (calibrated scores shift the operating point).
+
+After flipping apply or refreshing calibrators, re-assess orders that may be idempotency-cached: set `"force_reassess": true` on `POST /v1/assess` (bumps `assessment_generation`; see §3.1).
+
+Optional tick: `calibration.on_tick: true` with `OCR_CONTROL_PLANE_TICK_SECONDS > 0`.
 
 ### 4.7 Recommended tuning loop (human + auto)
 
