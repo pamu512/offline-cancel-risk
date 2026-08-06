@@ -211,8 +211,10 @@ calibration:
   platt_max_n: 80
   holdout_fraction: 0.3
   max_ece: 0.05
+  max_brier: 0.25
   cooldown_minutes: 1440
   ece_bins: 10
+  ece_strategy: quantile  # equal|quantile — quantile avoids fake-low ECE on clustered probs
 routing:
   # Prioritized review routing from attention_score + flags (downstream may use queue).
   p1_attention_min: 200
