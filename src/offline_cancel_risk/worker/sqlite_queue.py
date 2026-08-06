@@ -13,6 +13,7 @@ from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.baselines.store import EntityBaselineStore
+from offline_cancel_risk.control_plane.calibrate import CalibratorStore
 from offline_cancel_risk.control_plane.metrics import LabelMetricsStore
 from offline_cancel_risk.features.anomaly import EntityAnomalyStore
 from offline_cancel_risk.features.chat_signals import ChatSignalStore
@@ -172,6 +173,7 @@ class SqliteAssessJobQueue:
         label_metrics: LabelMetricsStore | None = None,
         driver_chains: DriverChainStore | None = None,
         baselines: EntityBaselineStore | None = None,
+        calibrators: CalibratorStore | None = None,
         cancel_stats: EntityCancelStatsStore | None = None,
         devices: DeviceIntegrityStore | None = None,
         device_graph: DeviceGraphStore | None = None,
@@ -203,6 +205,7 @@ class SqliteAssessJobQueue:
                 bias_hints=hints,
                 driver_chains=driver_chains,
                 baselines=baselines,
+                calibrators=calibrators,
                 cancel_stats=cancel_stats,
                 devices=devices,
                 device_graph=device_graph,
@@ -235,6 +238,7 @@ class SqliteAssessJobQueue:
         label_metrics: LabelMetricsStore | None = None,
         driver_chains: DriverChainStore | None = None,
         baselines: EntityBaselineStore | None = None,
+        calibrators: CalibratorStore | None = None,
         cancel_stats: EntityCancelStatsStore | None = None,
         devices: DeviceIntegrityStore | None = None,
         device_graph: DeviceGraphStore | None = None,
@@ -263,6 +267,7 @@ class SqliteAssessJobQueue:
                 label_metrics=label_metrics,
                 driver_chains=driver_chains,
                 baselines=baselines,
+                calibrators=calibrators,
                 cancel_stats=cancel_stats,
                 devices=devices,
                 device_graph=device_graph,

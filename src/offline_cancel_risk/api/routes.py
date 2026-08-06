@@ -8,6 +8,11 @@ from pydantic import BaseModel, Field
 
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult, OutcomeIngestRequest
 from offline_cancel_risk.control_plane.cycle import run_metrics_and_tune
+from offline_cancel_risk.control_plane.calibrate import (
+    CalibrationFitContext,
+    run_calibration_fit,
+)
+from offline_cancel_risk.control_plane.cycle import assessments_as_dicts
 from offline_cancel_risk.control_plane.dbscan_retune import (
     DbscanRetuneContext,
     run_dbscan_retune,
@@ -86,6 +91,12 @@ class DbscanRetuneRequest(BaseModel):
     mode: str | None = None
 
 
+class CalibrateRequest(BaseModel):
+    region_code: str
+    city_code: str = ""
+    mode: str | None = None
+
+
 class MarketplaceEventIngest(BaseModel):
     driver_id: int
     user_id: int | None = None
@@ -157,6 +168,7 @@ async def _enqueue_one(request: Request, body: AssessRequest) -> dict[str, str]:
             label_metrics=getattr(request.app.state, "label_metrics", None),
             driver_chains=getattr(request.app.state, "driver_chains", None),
             baselines=getattr(request.app.state, "baselines", None),
+            calibrators=getattr(request.app.state, "calibrators", None),
             cancel_stats=getattr(request.app.state, "cancel_stats", None),
             devices=getattr(request.app.state, "devices", None),
             device_graph=getattr(request.app.state, "device_graph", None),
@@ -1010,6 +1022,44 @@ async def get_dbscan_retune_latest(
     row = store.latest(region_code, city_code)
     if row is None:
         raise HTTPException(status_code=404, detail="no retune run for market")
+    return row
+
+
+@router.post("/tuning/calibrate")
+async def post_calibrate(body: CalibrateRequest, request: Request) -> dict[str, Any]:
+    """Fit per-head×market calibrators from labeled pattern cohort (shadow by default)."""
+    _require_auth(request)
+    calibrators = getattr(request.app.state, "calibrators", None)
+    if calibrators is None:
+        raise HTTPException(status_code=503, detail="calibrators unavailable")
+    run_store = getattr(request.app.state, "calibration_run_store", None)
+    ctx = CalibrationFitContext(
+        base_policy=request.app.state.policy,
+        audit=request.app.state.audit,
+        calibrators=calibrators,
+        assessments=assessments_as_dicts(request.app.state.table),
+        feedback=request.app.state.table.list_feedback(),
+        region_code=body.region_code,
+        city_code=body.city_code,
+        mode_override=body.mode,
+        run_store=run_store,
+    )
+    return await asyncio.to_thread(run_calibration_fit, ctx)
+
+
+@router.get("/tuning/calibrate/latest")
+async def get_calibrate_latest(
+    request: Request,
+    region_code: str,
+    city_code: str = "",
+) -> dict[str, Any]:
+    _require_auth(request)
+    store = getattr(request.app.state, "calibration_run_store", None)
+    if store is None:
+        raise HTTPException(status_code=404, detail="calibration run store unavailable")
+    row = store.latest(region_code, city_code)
+    if row is None:
+        raise HTTPException(status_code=404, detail="no calibration run for market")
     return row
 
 

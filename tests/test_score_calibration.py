@@ -1,9 +1,15 @@
 from copy import deepcopy
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 
 import numpy as np
+import pytest
+from fastapi.testclient import TestClient
 
+from offline_cancel_risk.adapters.gps import FakeGpsClient
+from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
+from offline_cancel_risk.api.schemas import AssessRequest
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
 from offline_cancel_risk.control_plane.calibrate import (
     CalibrationFitContext,
@@ -11,12 +17,15 @@ from offline_cancel_risk.control_plane.calibrate import (
     CalibratorStore,
     run_calibration_fit,
 )
+from offline_cancel_risk.domain.models import GpsPoint
+from offline_cancel_risk.main import create_app
+from offline_cancel_risk.pipeline.assess import assess_order
 from offline_cancel_risk.scoring.calibration import (
     expected_calibration_error,
     fit_calibrator,
     predict_calibrated,
 )
-from offline_cancel_risk.settings import load_policy
+from offline_cancel_risk.settings import Settings, load_policy
 
 
 def test_ece_perfect_is_near_zero():
@@ -201,3 +210,161 @@ def test_fit_respects_cooldown(tmp_path: Path):
     assert report["decision"] == "rejected"
     assert report["reason"] == "cooldown"
     assert ctx.calibrators.get("PH", "MNL", "cancelled_offline") is None
+
+
+def _pickup_cluster(n: int = 40) -> list[GpsPoint]:
+    base = datetime(2024, 1, 1, 10, 0, 0)
+    return [
+        GpsPoint(
+            lat=14.55 + (i % 5) * 1e-5,
+            lon=121.03 + (i % 3) * 1e-5,
+            ts=(base + timedelta(minutes=i * 2)).strftime("%Y-%m-%d %H:%M:%S"),
+            speed_mps=0.3,
+        )
+        for i in range(n)
+    ]
+
+
+def _assess_req(oid: str) -> AssessRequest:
+    return AssessRequest(
+        order_display_id=oid,
+        driver_id=42,
+        cancel_ts="2024-01-01 11:20:00",
+        assign_ts="2024-01-01 10:00:00",
+        latlong="14.55|121.03,14.65|121.08",
+        path_point_num=2,
+        order_status="CANCELLED",
+        category="FOOD",
+        order_value=800.0,
+        currency="PHP",
+        region_code="PH",
+        city_code="MNL",
+    )
+
+
+def _seed_calibrator(store: CalibratorStore) -> None:
+    store.upsert(
+        region_code="PH",
+        city_code="MNL",
+        head="cancelled_offline",
+        method="isotonic",
+        params={"X_thresholds": [0.0, 1.0], "y_thresholds": [0.1, 0.95]},
+        ece=0.02,
+        support=40,
+    )
+
+
+def _settings(tmp_path: Path) -> Settings:
+    return Settings(
+        sqlite_path=str(tmp_path / "assess.db"),
+        stream_path=str(tmp_path / "stream.jsonl"),
+        policy_overlays_path=str(tmp_path / "overlays.db"),
+        control_plane_sqlite_path=str(tmp_path / "cp.db"),
+        assess_gps_cache_path=str(tmp_path / "gps_cache.db"),
+        label_tickets_path=str(tmp_path / "tickets.db"),
+        label_tickets_stream_path=str(tmp_path / "tickets.jsonl"),
+        driver_chains_path=str(tmp_path / "chains.db"),
+        entity_baselines_path=str(tmp_path / "baselines.db"),
+        entity_cancel_stats_path=str(tmp_path / "cancel_stats.db"),
+        device_integrity_path=str(tmp_path / "devices.db"),
+        device_graph_path=str(tmp_path / "device_graph.db"),
+        chat_signals_path=str(tmp_path / "chat.db"),
+        entity_anomaly_path=str(tmp_path / "anomaly.db"),
+        outcomes_path=str(tmp_path / "outcomes.db"),
+        models_sqlite_path=str(tmp_path / "models.db"),
+        models_root=str(tmp_path / "model_files"),
+        shadow_metrics_path=str(tmp_path / "shadow.db"),
+        canary_sqlite_path=str(tmp_path / "canary.db"),
+        calibrators_path=str(tmp_path / "calibrators.db"),
+        sync_assess=True,
+        control_plane_tick_seconds=0,
+    )
+
+
+@pytest.mark.asyncio
+async def test_assess_shadow_keeps_scores_writes_meta(tmp_path: Path):
+    store = CalibratorStore(tmp_path / "cal.db")
+    _seed_calibrator(store)
+    policy = deepcopy(load_policy("config/policy.default.yaml"))
+    policy["calibration"] = {**_policy()["calibration"], "mode": "shadow"}
+    gps = FakeGpsClient(_pickup_cluster())
+    stream = JsonlStreamPublisher(stream_path=str(tmp_path / "s.jsonl"))
+    table = SqliteTablePublisher(sqlite_path=str(tmp_path / "a.db"))
+
+    baseline = await assess_order(
+        _assess_req("CAL-SHADOW-A"), gps, policy, stream=stream, table=table
+    )
+    with_cal = await assess_order(
+        _assess_req("CAL-SHADOW-B"),
+        gps,
+        policy,
+        stream=stream,
+        table=table,
+        calibrators=store,
+    )
+
+    assert with_cal.scores.cancelled_offline == pytest.approx(
+        baseline.scores.cancelled_offline
+    )
+    meta = with_cal.calibration_meta["cancelled_offline"]
+    assert meta["applied"] is False
+    assert "p" in meta
+    assert meta["mode"] == "shadow"
+
+
+@pytest.mark.asyncio
+async def test_assess_apply_replaces_scores_keeps_raw(tmp_path: Path):
+    store = CalibratorStore(tmp_path / "cal.db")
+    _seed_calibrator(store)
+    policy = deepcopy(load_policy("config/policy.default.yaml"))
+    policy["calibration"] = {**_policy()["calibration"], "mode": "apply"}
+    gps = FakeGpsClient(_pickup_cluster())
+    stream = JsonlStreamPublisher(stream_path=str(tmp_path / "s.jsonl"))
+    table = SqliteTablePublisher(sqlite_path=str(tmp_path / "a.db"))
+
+    result = await assess_order(
+        _assess_req("CAL-APPLY-1"),
+        gps,
+        policy,
+        stream=stream,
+        table=table,
+        calibrators=store,
+    )
+
+    meta = result.calibration_meta["cancelled_offline"]
+    assert meta["applied"] is True
+    assert result.scores.cancelled_offline == pytest.approx(float(meta["p"]))
+    assert result.scores_raw is not None
+    expected_p = predict_calibrated(
+        {
+            "method": "isotonic",
+            "params": {"X_thresholds": [0.0, 1.0], "y_thresholds": [0.1, 0.95]},
+        },
+        float(result.scores_raw.cancelled_offline),
+    )
+    assert result.scores.cancelled_offline == pytest.approx(expected_p)
+    assert result.scores.cancelled_offline != pytest.approx(
+        float(result.scores_raw.cancelled_offline)
+    )
+
+
+def test_calibrate_api(tmp_path: Path):
+    app = create_app(
+        gps_client=FakeGpsClient([]),
+        settings=_settings(tmp_path),
+    )
+    client = TestClient(app)
+    r = client.post(
+        "/v1/tuning/calibrate",
+        json={"region_code": "PH", "city_code": "MNL", "mode": "shadow"},
+    )
+    assert r.status_code == 200
+    body = r.json()
+    assert body["decision"] == "rejected"
+    assert "insufficient" in body["reason"]
+    latest = client.get(
+        "/v1/tuning/calibrate/latest",
+        params={"region_code": "PH", "city_code": "MNL"},
+    )
+    assert latest.status_code == 200
+    assert "insufficient" in latest.json()["reason"]

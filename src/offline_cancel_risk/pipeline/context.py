@@ -8,6 +8,7 @@ from typing import Any
 from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.baselines.store import EntityBaselineStore
+from offline_cancel_risk.control_plane.calibrate import CalibratorStore
 from offline_cancel_risk.domain.models import GpsPoint
 from offline_cancel_risk.features.driver_chains import DriverChainStore
 from offline_cancel_risk.features.entity_stats import EntityCancelStatsStore
@@ -46,6 +47,7 @@ class AssessContext:
     bias_hints: dict[str, str] | None = None
     driver_chains: DriverChainStore | None = None
     baselines: EntityBaselineStore | None = None
+    calibrators: CalibratorStore | None = None
     cancel_stats: EntityCancelStatsStore | None = None
     devices: DeviceIntegrityPort | None = None
     device_graph: DeviceGraphPort | None = None
@@ -111,6 +113,7 @@ class AssessContext:
     scores_raw: dict[str, float] = field(default_factory=dict)
     flags: dict[str, int] = field(default_factory=dict)
     baseline_meta: dict[str, dict[str, object]] = field(default_factory=dict)
+    calibration_meta: dict[str, Any] = field(default_factory=dict)
     shadow_scores: dict[str, Any] = field(default_factory=dict)
     model_roles: dict[str, str] = field(default_factory=dict)
     serve_model_id: str = "none"

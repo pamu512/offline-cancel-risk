@@ -6,6 +6,7 @@ from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.baselines.store import EntityBaselineStore
+from offline_cancel_risk.control_plane.calibrate import CalibratorStore
 from offline_cancel_risk.features.anomaly import EntityAnomalyStore
 from offline_cancel_risk.features.chat_signals import ChatSignalStore
 from offline_cancel_risk.features.device_graph import DeviceGraphStore
@@ -50,6 +51,7 @@ async def assess_order(
     bias_hints: dict[str, str] | None = None,
     driver_chains: DriverChainStore | None = None,
     baselines: EntityBaselineStore | None = None,
+    calibrators: CalibratorStore | None = None,
     cancel_stats: EntityCancelStatsStore | None = None,
     devices: DeviceIntegrityStore | None = None,
     device_graph: DeviceGraphStore | None = None,
@@ -110,6 +112,7 @@ async def assess_order(
         bias_hints=bias_hints,
         driver_chains=driver_chains,
         baselines=baselines,
+        calibrators=calibrators,
         cancel_stats=cancel_stats,
         devices=devices,
         device_graph=device_graph,

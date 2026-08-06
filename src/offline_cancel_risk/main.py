@@ -16,6 +16,10 @@ from offline_cancel_risk.ports import AssessmentStore
 from offline_cancel_risk.api.routes import router
 from offline_cancel_risk.baselines.store import EntityBaselineStore
 from offline_cancel_risk.control_plane.audit import PolicyAuditLog
+from offline_cancel_risk.control_plane.calibrate import (
+    CalibrationRunStore,
+    CalibratorStore,
+)
 from offline_cancel_risk.features.anomaly import EntityAnomalyStore
 from offline_cancel_risk.features.chat_signals import ChatSignalStore
 from offline_cancel_risk.features.device_graph import DeviceGraphStore
@@ -81,6 +85,8 @@ def create_app(
     label_metrics_store = LabelMetricsStore(cp_path)
     gps_cache = AssessGpsCache(settings.assess_gps_cache_path)
     dbscan_retune_store = DbscanRetuneStore(cp_path)
+    calibrator_store = CalibratorStore(settings.calibrators_path)
+    calibration_run_store = CalibrationRunStore(cp_path)
     operating_point_cfg = load_policy(settings.operating_point_path)
     ticket_store = LabelTicketStore(
         settings.label_tickets_path,
@@ -123,6 +129,8 @@ def create_app(
             "op_cfg": operating_point_cfg,
             "gps_cache": gps_cache,
             "dbscan_retune_store": dbscan_retune_store,
+            "calibrators": calibrator_store,
+            "calibration_run_store": calibration_run_store,
         },
         table=table_pub,
         tickets=ticket_store,
@@ -147,6 +155,7 @@ def create_app(
                     label_metrics=label_metrics_store,
                     driver_chains=chain_store,
                     baselines=baseline_store,
+                    calibrators=calibrator_store,
                     cancel_stats=cancel_stats_store,
                     devices=device_store,
                     device_graph=device_graph_store,
@@ -184,6 +193,8 @@ def create_app(
     app.state.tickets = ticket_store
     app.state.driver_chains = chain_store
     app.state.baselines = baseline_store
+    app.state.calibrators = calibrator_store
+    app.state.calibration_run_store = calibration_run_store
     app.state.cancel_stats = cancel_stats_store
     app.state.devices = device_store
     app.state.device_graph = device_graph_store

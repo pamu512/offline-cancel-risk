@@ -81,6 +81,7 @@ Ready: `GET /v1/ready` → 200 when auth/GPS config is sane for the profile; 503
 | `OCR_LABEL_TICKETS_STREAM_PATH` | `data/label_tickets.jsonl` | Ticket stream |
 | `OCR_DRIVER_CHAINS_PATH` | `data/driver_chains.db` | Cross-order cancel chains |
 | `OCR_ENTITY_BASELINES_PATH` | `data/entity_baselines.db` | Driver/user/pair score baselines |
+| `OCR_CALIBRATORS_PATH` | `data/calibrators.db` | Per head×market score calibrators |
 | `OCR_ENTITY_CANCEL_STATS_PATH` | `data/entity_cancel_stats.db` | Cancel-rate / pair density events |
 | `OCR_DEVICE_INTEGRITY_PATH` | `data/device_integrity.db` | Device integrity EWMA / last flags |
 | `OCR_DEVICE_GRAPH_PATH` | `data/device_graph.db` | Device↔driver/user graph edges |
@@ -393,6 +394,30 @@ Optional tick: `dbscan_retune.on_tick: true` with `OCR_CONTROL_PLANE_TICK_SECOND
 
 Does **not** add a new clusterer or cross-order geo clustering — only retunes v5 per-trip DBSCAN refs.
 
+### 4.6b Score calibration (Platt / isotonic)
+
+Offline fit on pattern cohort \(S\) using `scores_raw` (pre-baseline). Assess applies after baselines / before thresholds. Default `policy.calibration.mode: shadow` fills `calibration_meta` without changing live scores.
+
+```bash
+# Shadow fit (persist calibrator when ECE gate passes; scores unchanged)
+curl -X POST localhost:8000/v1/tuning/calibrate \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL"}'
+curl 'localhost:8000/v1/tuning/calibrate/latest?region_code=PH&city_code=MNL'
+
+# After reviewing holdout ECE: flip apply (or POST mode=apply)
+# Then retune thresholds — calibrated scores shift the operating point.
+curl -X POST localhost:8000/v1/tuning/calibrate \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL","mode":"apply"}'
+# set policy.calibration.mode=apply for the market, then:
+curl -X POST localhost:8000/v1/tuning/run \
+  -H 'Content-Type: application/json' \
+  -d '{"region_code":"PH","city_code":"MNL"}'
+```
+
+Workflow: **shadow fit → review ECE → `mode: apply` → retune thresholds**. Optional tick: `calibration.on_tick: true` with `OCR_CONTROL_PLANE_TICK_SECONDS > 0`.
+
 ### 4.7 Recommended tuning loop (human + auto)
 
 1. Set forecast + hardgates for the market week.  
@@ -457,6 +482,7 @@ This service is a **feature producer**, not multi-region SaaS. Default layout:
 | `data/label_tickets.db` | Review tickets |
 | `data/driver_chains.db` | Driver cancel events |
 | `data/entity_baselines.db` | Driver/user/pair baselines |
+| `data/calibrators.db` | Per head×market score calibrators |
 | `data/device_integrity.db` | Device integrity EWMA |
 | `data/device_graph.db` | Device↔account graph edges |
 | `data/chat_signals.db` | Force-cancel / chat flags |
@@ -567,6 +593,8 @@ OCR_PROFILE=prod OCR_API_KEYS=... OCR_QUEUE_BACKEND=sqlite \
 | GET | `/v1/baselines/{entity_key}` | All heads for `driver:1` / `user:2` / `pair:1:2` |
 | GET | `/v1/metrics/labels` | P/R/F1 snapshots |
 | POST | `/v1/tuning/run` | Metrics + tuner |
+| POST | `/v1/tuning/calibrate` | Fit score calibrators (shadow by default) |
+| GET | `/v1/tuning/calibrate/latest` | Latest calibration run report |
 | GET | `/v1/tuning/suggestions` | Recent suggest/apply/reject |
 | GET | `/v1/audit/policy` | Audit trail |
 | GET/POST | `/v1/models…` | Sideload, evaluate, canary, promote |

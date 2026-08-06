@@ -11,11 +11,16 @@ from offline_cancel_risk.control_plane.cycle import (
     markets_from_assessments,
     run_metrics_and_tune,
 )
+from offline_cancel_risk.control_plane.calibrate import (
+    CalibrationFitContext,
+    run_calibration_fit,
+)
 from offline_cancel_risk.control_plane.dbscan_retune import (
     DbscanRetuneContext,
     dbscan_retune_cfg,
     run_dbscan_retune,
 )
+from offline_cancel_risk.scoring.calibration import calibration_cfg
 from offline_cancel_risk.control_plane.leader import FileLeaderLock
 from offline_cancel_risk.feedback.sampler import (
     bias_hints_from_metrics,
@@ -95,7 +100,13 @@ class ControlPlaneLoop:
         return {
             k: v
             for k, v in self._run_kwargs.items()
-            if k not in {"gps_cache", "dbscan_retune_store"}
+            if k
+            not in {
+                "gps_cache",
+                "dbscan_retune_store",
+                "calibrators",
+                "calibration_run_store",
+            }
         }
 
     async def flush_pending(self, *, reason: str) -> list[dict[str, Any]]:
@@ -162,6 +173,36 @@ class ControlPlaneLoop:
                     "DBSCAN retune tick failed for market=%s/%s", region, city
                 )
 
+    async def _maybe_calibrate(self, markets: list[tuple[str, str]]) -> None:
+        policy = self._run_kwargs.get("policy") or {}
+        cfg = calibration_cfg(policy)
+        if not cfg.get("on_tick"):
+            return
+        calibrators = self._run_kwargs.get("calibrators")
+        if calibrators is None:
+            return
+        assessments = assessments_as_dicts(self._table)
+        feedback = self._table.list_feedback()
+        for region, city in markets:
+            if not region:
+                continue
+            try:
+                ctx = CalibrationFitContext(
+                    base_policy=policy,
+                    audit=self._run_kwargs["audit"],
+                    calibrators=calibrators,
+                    assessments=assessments,
+                    feedback=feedback,
+                    region_code=region,
+                    city_code=city,
+                    run_store=self._run_kwargs.get("calibration_run_store"),
+                )
+                await asyncio.to_thread(run_calibration_fit, ctx)
+            except Exception:
+                _LOG.exception(
+                    "Calibration tick failed for market=%s/%s", region, city
+                )
+
     async def _run_tick(self) -> None:
         if not self._is_leader():
             return
@@ -196,6 +237,7 @@ class ControlPlaneLoop:
                         "Scheduled tune failed for market=%s/%s", region, city
                     )
             await self._maybe_dbscan_retune(markets)
+            await self._maybe_calibrate(markets)
 
     def start(self) -> None:
         if self._tick_s > 0 and (

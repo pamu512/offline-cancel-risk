@@ -106,3 +106,4 @@ class AssessmentResult(BaseModel):
     cancel_stage: str | None = None
     evidence: list[dict[str, object]] = Field(default_factory=list)
     ear_meta: dict = Field(default_factory=dict)
+    calibration_meta: dict = Field(default_factory=dict)
