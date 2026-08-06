@@ -19,8 +19,9 @@ from offline_cancel_risk.settings import Settings
 
 
 def assessments_as_dicts(table: AssessmentStore) -> list[dict[str, Any]]:
-    return [
-        {
+    out: list[dict[str, Any]] = []
+    for r in table.list_latest_assessments():
+        row: dict[str, Any] = {
             "order_display_id": r.order_display_id,
             "region_code": r.region_code,
             "city_code": r.city_code,
@@ -29,8 +30,10 @@ def assessments_as_dicts(table: AssessmentStore) -> list[dict[str, Any]]:
             "ml_scores": r.ml_scores.model_dump(),
             "attention_score": float(r.attention_score),
         }
-        for r in table.list_latest_assessments()
-    ]
+        if r.scores_raw is not None:
+            row["scores_raw"] = r.scores_raw.model_dump()
+        out.append(row)
+    return out
 
 
 def markets_from_assessments(

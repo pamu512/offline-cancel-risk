@@ -203,6 +203,16 @@ dbscan_retune:
   grid:
     clustering_radius_m: [30, 40, 50, 60, 80]
     min_pts: [5, 7, 9, 11, 15]
+# Score calibration on pattern cohort S (default shadow; apply replaces scores).
+calibration:
+  mode: shadow
+  on_tick: false
+  min_labeled: 30
+  platt_max_n: 80
+  holdout_fraction: 0.3
+  max_ece: 0.05
+  cooldown_minutes: 1440
+  ece_bins: 10
 routing:
   # Prioritized review routing from attention_score + flags (downstream may use queue).
   p1_attention_min: 200

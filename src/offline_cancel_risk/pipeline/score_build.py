@@ -17,6 +17,7 @@ from offline_cancel_risk.features.evidence import build_evidence
 from offline_cancel_risk.pipeline.context import AssessContext
 from offline_cancel_risk.policy.routing import build_routing
 from offline_cancel_risk.scoring.blend import blend_scores
+from offline_cancel_risk.scoring.calibration import calibration_cfg, predict_calibrated
 from offline_cancel_risk.scoring.ear import compute_ear, resolve_recoverability
 from offline_cancel_risk.scoring.policy import apply_thresholds
 from offline_cancel_risk.scoring.rules import compute_rule_scores
@@ -167,6 +168,38 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
             _LOG.exception(
                 "Entity baseline gate failed for order=%s", req.order_display_id
             )
+    ctx.calibration_meta = {}
+    cfg = calibration_cfg(policy)
+    mode = cfg["mode"]
+    if ctx.calibrators is not None and mode != "off":
+        region = (req.region_code or "").strip().upper()
+        city = (req.city_code or "").strip().upper()
+        for head in ("cancelled_offline", "cancel_abuse", "selective_theft"):
+            row = ctx.calibrators.get(region, city, head)
+            if row is None:
+                ctx.calibration_meta[head] = {
+                    "applied": False,
+                    "skip_reason": "missing",
+                }
+                continue
+            p = predict_calibrated(
+                {"method": row["method"], "params": row["params"]},
+                float(ctx.scores_raw[head]),
+            )
+            discounted = abs(float(ctx.scores[head]) - float(ctx.scores_raw[head])) > 1e-12
+            meta = {
+                "p": p,
+                "method": row["method"],
+                "mode": mode,
+                "ece": row.get("ece"),
+                "support": row.get("support"),
+                "applied": False,
+                "baseline_discounted": discounted,
+            }
+            if mode == "apply":
+                ctx.scores[head] = p
+                meta["applied"] = True
+            ctx.calibration_meta[head] = meta
     ctx.flags = apply_thresholds(ctx.scores, policy)
 
     if ctx.registry is not None:
@@ -304,6 +337,7 @@ def run_score_stage(ctx: AssessContext) -> AssessmentResult:
         cancel_stage=ctx.stage,
         evidence=ctx.evidence,
         ear_meta=ctx.ear_meta,
+        calibration_meta=ctx.calibration_meta,
     )
     ctx.result = result
     return result

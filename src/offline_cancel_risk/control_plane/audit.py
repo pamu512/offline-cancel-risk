@@ -136,6 +136,8 @@ class PolicyAuditLog:
             after = json.loads(row["after_json"]) if row["after_json"] else {}
             if head == "dbscan" and "dbscan" in after:
                 return str(row["ts"])
+            if head == "calibration" and "calibration" in after:
+                return str(row["ts"])
             thresholds = after.get("thresholds") or {}
             if head in thresholds:
                 return str(row["ts"])

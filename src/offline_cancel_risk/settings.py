@@ -32,6 +32,7 @@ class Settings(BaseSettings):
     label_tickets_stream_path: str = str(ROOT / "data" / "label_tickets.jsonl")
     driver_chains_path: str = str(ROOT / "data" / "driver_chains.db")
     entity_baselines_path: str = str(ROOT / "data" / "entity_baselines.db")
+    calibrators_path: str = str(ROOT / "data" / "calibrators.db")
     entity_cancel_stats_path: str = str(ROOT / "data" / "entity_cancel_stats.db")
     device_integrity_path: str = str(ROOT / "data" / "device_integrity.db")
     device_graph_path: str = str(ROOT / "data" / "device_graph.db")
