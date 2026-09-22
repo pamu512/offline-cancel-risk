@@ -1,10 +1,14 @@
 # offline-cancel-risk
 
-When a logistics order is cancelled, money can still walk out the door: the trip may have been completed off-platform, cancel/reassign games may be gaming the marketplace, or food/high-value goods may have gone missing. **offline-cancel-risk** turns cancelled-order + GPS evidence into three independent, ops-tunable risk scores—so downstream systems can stop revenue leakage without a human reviewing every cancel.
+**offline-cancel-risk** produces three independent, ops-tunable **risk scores** from features you already have. It does not ingest live GPS or enforce payout/suspend actions.
 
-Apache-2.0 toolkit: plug in your GPS and order feeds, or try the zero-network CSV demo in minutes.
+**Ownership:** this repo scores; [Downstream owns GPS ingest and enforcement](docs/CUTOVER.md). No implied live tracking.
+
+Apache-2.0 toolkit: inject an adapter or sample CSVs. The [zero-network CSV demo](examples/csv_demo/README.md) needs no GPS product.
 
 ## How it works
+
+GPS tracks are an **injected input** (adapter or CSV), not a live location service this repo operates.
 
 ```
 cancel / batch assess
@@ -32,13 +36,14 @@ cancel / batch assess
 | `cancel_abuse` | Cancel / reassign games |
 | `selective_theft` | Food / high-value + next-driver “no order” |
 
-Stop geometry normalizes across ping rates (1s–30s) and optional Downstream `place_class` / `vehicle_class`, with a traffic-crawl filter on dwell. This service is a **feature producer**. Downstream owns payout blocks, suspensions, and clawback.
+Stop geometry normalizes across ping rates (1s–30s) and optional Downstream `place_class` / `vehicle_class`, with a traffic-crawl filter on dwell. This service is a **score producer**. Downstream owns GPS ingest, payout blocks, suspensions, and clawback.
 
 ## Docs
 
 | Doc | Contents |
 |---|---|
-| **[docs/MANUAL.md](docs/MANUAL.md)** | **Start here** — how to use, minimum requirements, how to tune |
+| **[docs/CUTOVER.md](docs/CUTOVER.md)** | **Scores vs Downstream** — GPS ingest and enforcement stay outside this repo |
+| **[docs/MANUAL.md](docs/MANUAL.md)** | How to use, minimum requirements, how to tune |
 | [docs/OPS.md](docs/OPS.md) | Full ops: env vars, HA topology, API reference, maintenance |
 | [examples/csv_demo/README.md](examples/csv_demo/README.md) | Offline CSV demo |
 | [CONTRIBUTING.md](CONTRIBUTING.md) | Dev setup / PRs |
@@ -53,7 +58,7 @@ Stop geometry normalizes across ping rates (1s–30s) and optional Downstream `p
 | Platform / data eng | Async API or library job; stream + table consumers |
 | Any delivery team | Clone / pip install; CSV demo needs no network |
 
-**Not for:** realtime cancel-path blocking, owning LBS GPS, or running enforcement inside this service.
+**Not for:** live GPS / LBS, realtime cancel-path blocking, or running enforcement inside this service.
 
 ## Quickstart
 
