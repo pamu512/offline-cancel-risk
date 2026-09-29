@@ -1,11 +1,13 @@
 import json
 import sqlite3
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 
 import pytest
 
 from offline_cancel_risk.adapters.gps import FakeGpsClient, GpsClient
+from offline_cancel_risk.adapters.http_stream import HttpStreamPublisher
 from offline_cancel_risk.adapters.publishers import JsonlStreamPublisher, SqliteTablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
 from offline_cancel_risk.domain.models import GpsPoint
@@ -148,3 +150,45 @@ async def test_dual_write_table_first_survives_stream_failure(tmp_path: Path):
         req, gps, policy, stream=_BoomStream(), table=table
     )
     assert again.model_dump() == result.model_dump()
+
+
+@pytest.mark.asyncio
+async def test_assess_http_publish_not_on_event_loop_thread(
+    tmp_path: Path, monkeypatch
+):
+    loop_thread = threading.get_ident()
+    post_threads: list[int] = []
+
+    def _post(url, content=None, headers=None, timeout=None):
+        del url, content, headers, timeout
+        post_threads.append(threading.get_ident())
+
+        class Resp:
+            status_code = 204
+
+        return Resp()
+
+    monkeypatch.setattr("offline_cancel_risk.adapters.http_stream.httpx.post", _post)
+    policy = load_policy(Path("config/policy.default.yaml"))
+    req = AssessRequest(
+        order_display_id="ORD-HTTP-PUB",
+        driver_id=1,
+        cancel_ts="2024-01-01 11:20:00",
+        assign_ts="2024-01-01 10:00:00",
+        latlong=f"{PICKUP[0]}|{PICKUP[1]},{DEST[0]}|{DEST[1]}",
+        path_point_num=2,
+        order_status="CANCELLED",
+        category="FOOD",
+        order_value=100.0,
+        currency="PHP",
+    )
+    result = await assess_order(
+        req,
+        FakeGpsClient(_pickup_cluster()),
+        policy,
+        stream=HttpStreamPublisher("http://bus.test/risk"),
+        table=SqliteTablePublisher(sqlite_path=str(tmp_path / "a.db")),
+    )
+    assert result.order_display_id == "ORD-HTTP-PUB"
+    assert post_threads, "expected HttpStreamPublisher to POST"
+    assert all(tid != loop_thread for tid in post_threads)
