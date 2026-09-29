@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+import asyncio
+
 from offline_cancel_risk.adapters.gps import GpsClient
 from offline_cancel_risk.adapters.publishers import StreamPublisher, TablePublisher
 from offline_cancel_risk.api.schemas import AssessRequest, AssessmentResult
@@ -134,5 +136,6 @@ async def assess_order(
         feature_sink.update(
             {k: float(ctx.ml_feature_vec[k]) for k in ML_FEATURE_KEYS}
         )
-    run_publish_stage(ctx)
+    # ponytail: publishers are sync (httpx.post, sqlite). Off-loop so webhook latency cannot stall assess.
+    await asyncio.to_thread(run_publish_stage, ctx)
     return result
